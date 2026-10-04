@@ -1,0 +1,6 @@
+/* Clean up default Vite CSS */
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}

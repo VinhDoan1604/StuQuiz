@@ -1,0 +1,41 @@
+# Environment & Secrets
+*.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Testing & Cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Frontend
+node_modules/
+dist/
+
+# Database & Local Storage
+*.db
+*.sqlite3
+postgres_data/
+qdrant_storage/
+data/
+uploads/
+
+# Logs & Temp
+*.log
+logs/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# private
+docs/
