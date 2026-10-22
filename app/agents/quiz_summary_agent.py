@@ -46,7 +46,8 @@ from app.retrieval.helpers import (
 from app.agents.state import GraphState
 from app.memory.mastery_tracker import get_weak_topics
 from app.models.db_models import Document, QuizAttempt
-from app.models.schemas import QuizQuestion
+from app.agents.retrieval_agent import FINAL_TOP_K_BROAD      # sửa NameError khi tóm tắt từ chat
+from app.models.schemas import QuizQuestion, QuizQuestionOut
 from app.utils.tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -112,11 +113,12 @@ async def _generate_quiz_questions(
 
     valid_questions = []
     for q in batch.questions:
-        if q.correct_choice not in q.choices:
-            logger.warning(
-                "_generate_quiz_questions: bỏ câu hỏi vì correct_choice không khớp choices: %r",
-                q.question[:80],
-            )
+        if (
+            len(q.choices) < 2
+            or len({c.strip().lower() for c in q.choices}) != len(q.choices)   # đáp án trùng nhau
+            or q.correct_choice not in q.choices
+        ):
+            logger.warning("_generate_quiz_questions: bỏ câu hỏi lỗi (đáp án trùng/không khớp): %r", q.question[:80])
             continue
         # Ép về ĐÚNG topic_label đã dùng để retrieve — QUAN TRỌNG: sau này
         # user trả lời, mastery_tracker.record_quiz_result(topic=...) phải
@@ -218,78 +220,79 @@ async def generate_quiz(
     prioritize_weak_topics: bool = True,
     topic_prompt: str | None = None,
     space_id: str | None = None,
-) -> list[QuizQuestion]:
+) -> list[QuizQuestionOut]:
     """
-    Sinh `num_questions` câu trắc nghiệm (tối đa 20 câu).
-    - Nếu `topic_prompt` được cung cấp: tập trung sinh câu hỏi xoay quanh chủ đề con cụ thể do người dùng yêu cầu.
-    - Nếu `prioritize_weak_topics` và không có `topic_prompt`: ưu tiên các chủ đề yếu/quá hạn ôn tập (SM-2).
-    - Tự động lưu `space_id` vào QuizAttempt để theo dõi lịch sử bài làm của Study Space.
+    Sinh tối đa `num_questions` (<=20) câu trắc nghiệm.
+    - topic_prompt: tập trung vào chủ đề do người dùng yêu cầu.
+    - prioritize_weak_topics (và không có topic_prompt): ưu tiên chủ đề yếu / quá hạn ôn tập.
+    - Mỗi câu trả về gắn với 1 QuizAttempt (attempt_id) để server tự chấm ở /quiz/answer.
     """
-    # Ràng buộc số lượng câu hỏi từ 1 đến tối đa 20 câu (Góp ý #9)
     num_questions = max(1, min(int(num_questions or 5), 20))
 
     topic_plan: list[str] = []
     if topic_prompt and topic_prompt.strip():
         topic_plan = [topic_prompt.strip()]
     elif prioritize_weak_topics:
-        weak = get_weak_topics(db, user_id, limit=min(num_questions, 8))
-        topic_plan = [t.topic for t in weak]
+        topic_plan = [t.topic for t in get_weak_topics(db, user_id, limit=min(num_questions, 8))]
 
     if not topic_plan:
-        # Không có topic yếu (user mới, hoặc prioritize_weak_topics=False)
-        # -> chế độ tổng hợp: dùng subject của tài liệu (nếu có) làm "topic".
         docs = db.query(Document).filter(Document.id.in_(document_ids)).all() if document_ids else []
-        subjects = {d.subject for d in docs if d.subject}
-        topic_plan = sorted(subjects) or ["Tổng hợp kiến thức"]
+        topic_plan = sorted({d.subject for d in docs if d.subject}) or ["Tổng hợp kiến thức"]
 
     n_topics = len(topic_plan)
     base, remainder = divmod(num_questions, n_topics)
-    # Topic đầu tiên nhận phần dư — topic CẦN CHÚ Ý NHẤT thì được ra nhiều câu hỏi nhất.
-    counts = [base + (1 if i < remainder else 0) for i in range(n_topics)]
+    counts = [base + (1 if i < remainder else 0) for i in range(n_topics)]  # topic cần chú ý nhất ra nhiều câu nhất
 
     all_questions: list[QuizQuestion] = []
     for topic, n in zip(topic_plan, counts):
         if n <= 0:
             continue
-
-        # Top-k retrieve: mở rộng theo số lượng câu hỏi cần sinh
-        retrieval_k = max(DEFAULT_CONTEXT_TOP_K, n * 2)
-        hits = await retrieve_top_k(topic, top_k=retrieval_k, document_ids=document_ids or None)
+        hits = await retrieve_top_k(
+            topic, top_k=max(DEFAULT_CONTEXT_TOP_K, n * 2), document_ids=document_ids or None
+        )
         chunks = [normalize_chunk(h) for h in hits]
-
         existing = [
             row[0]
             for row in db.query(QuizAttempt.question)
             .filter(QuizAttempt.user_id == user_id, QuizAttempt.topic == topic)
             .all()
         ]
+        all_questions.extend(await _generate_quiz_questions(chunks, topic, n, existing))
 
-        questions = await _generate_quiz_questions(chunks, topic, n, existing)
+    selected = _sort_by_difficulty(all_questions)[:num_questions]
 
-        for q in questions:
-            db.add(
-                QuizAttempt(
-                    id=str(uuid.uuid4()),
-                    user_id=user_id,
-                    space_id=space_id,
-                    topic=q.topic,
-                    question=q.question,
-                    choices=q.choices,
-                    correct_choice=q.correct_choice,
-                    user_choice=None,
-                    is_correct=None,
-                )
+    outputs: list[QuizQuestionOut] = []
+    for q in selected:
+        attempt = QuizAttempt(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            space_id=space_id,
+            topic=q.topic,
+            question=q.question,
+            choices=q.choices,
+            correct_choice=q.correct_choice,
+            explanation=q.explanation,
+            difficulty=q.difficulty,
+            user_choice=None,
+            is_correct=None,
+        )
+        db.add(attempt)
+        outputs.append(
+            QuizQuestionOut(
+                attempt_id=attempt.id,
+                question=q.question,
+                choices=q.choices,
+                topic=q.topic,
+                difficulty=q.difficulty,
             )
-        all_questions.extend(questions)
-
+        )
     db.commit()
 
-    result = _sort_by_difficulty(all_questions)[:num_questions]
     logger.info(
-        "generate_quiz(user=%s, space=%s): sinh %d/%d câu qua %d topic %s (topic_prompt=%s).",
-        user_id, space_id, len(result), num_questions, n_topics, topic_plan, topic_prompt,
+        "generate_quiz(user=%s, space=%s): %d/%d câu qua %d topic %s.",
+        user_id, space_id, len(outputs), num_questions, n_topics, topic_plan,
     )
-    return result
+    return outputs
 
 
 # ---------------------------------------------------------------------------

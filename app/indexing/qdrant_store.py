@@ -1,32 +1,32 @@
-# STATUS: READY (Hoàn thành Phase 1)
 """
-Wrapper quanh qdrant-client. BGE-M3 sinh đồng thời dense + sparse vector
-trong 1 model (xem app/embedding/bge_m3_embedder.py), collection dùng named
-vectors "dense" và "sparse" thay vì phải ghép thêm BM25 riêng.
+Wrapper quanh qdrant-client (dense + sparse named vectors của BGE-M3).
 
-Hỗ trợ:
-- Khởi tạo collection đa vector (ensure_collection)
-- Upsert points kèm metadata và ID duy nhất (upsert_chunks)
-- Hybrid Search kết hợp Reciprocal Rank Fusion (RRF) và metadata filtering (hybrid_search)
+Cô lập dữ liệu:
+- Point ID = chunk.id (uuid4 duy nhất) => hai tài liệu trùng tên KHÔNG ghi đè nhau.
+- Mọi truy vấn BẮT BUỘC kèm danh sách doc_id (đã được tầng API xác minh thuộc user).
+  Không có doc_id => trả rỗng, không bao giờ tìm trên toàn collection.
+- KHÔNG còn khớp theo filename (trước đây 2 user cùng upload 'slide.pdf' đọc lẫn nhau).
+- payload có thêm owner_id (phòng thủ nhiều lớp / phục vụ dọn dẹp, audit).
 """
-import uuid
 import logging
 from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
-    VectorParams,
-    SparseVectorParams,
+    FieldCondition,
+    Filter,
+    FilterSelector,
+    FusionQuery,
+    Fusion,
+    MatchAny,
+    MatchValue,
+    PayloadSchemaType,
     PointStruct,
     Prefetch,
     SparseVector,
-    FusionQuery,
-    Fusion,
-    Filter,
-    FieldCondition,
-    MatchValue,
-    MatchAny,
+    SparseVectorParams,
+    VectorParams,
 )
 
 from app.config import settings
@@ -34,86 +34,112 @@ from app.config import settings
 logger = logging.getLogger("app.indexing.qdrant")
 
 COLLECTION_NAME = "studyrag_chunks"
-DENSE_DIM = 1024  # BGE-M3 dense dimension
+DENSE_DIM = 1024  # BGE-M3
+UPSERT_BATCH = 128
 
 client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
 
+_indexes_ready = False
+
+
+def _ensure_payload_indexes() -> None:
+    """Index keyword cho các field dùng để lọc (nhanh + bắt buộc ở Qdrant Cloud)."""
+    global _indexes_ready
+    if _indexes_ready:
+        return
+    for field in ("doc_id", "owner_id"):
+        try:
+            client.create_payload_index(
+                collection_name=COLLECTION_NAME,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception as exc:  # đã tồn tại / phiên bản không hỗ trợ -> bỏ qua
+            logger.debug("create_payload_index(%s): %s", field, exc)
+    _indexes_ready = True
+
 
 def ensure_collection() -> None:
-    """Tạo collection với cấu hình Dense + Sparse vector nếu chưa tồn tại."""
-    if client.collection_exists(COLLECTION_NAME):
-        return
-    logger.info("Tạo mới collection Qdrant: %s", COLLECTION_NAME)
-    client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config={"dense": VectorParams(size=DENSE_DIM, distance=Distance.COSINE)},
-        sparse_vectors_config={"sparse": SparseVectorParams()},
-    )
+    if not client.collection_exists(COLLECTION_NAME):
+        logger.info("Tạo mới collection Qdrant: %s", COLLECTION_NAME)
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config={"dense": VectorParams(size=DENSE_DIM, distance=Distance.COSINE)},
+            sparse_vectors_config={"sparse": SparseVectorParams()},
+        )
+    _ensure_payload_indexes()
 
 
-def upsert_chunks(chunks: list, vectors: list) -> None:
+def upsert_chunks(chunks: list, vectors: list, owner_id: str | None = None) -> None:
     """
-    chunks: list[Chunk] (app.models.schemas)
-    vectors: list[dict] — mỗi phần tử {"dense": [...], "sparse": {"indices": [...], "values": [...]}}
+    chunks: list[Chunk]; vectors: list[{"dense": [...], "sparse": {"indices": [...], "values": [...]}}]
     """
     ensure_collection()
     points = []
-    for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
-        # Tạo UUID mang tính tất định để tránh trùng lặp hoặc xung đột ID khi upload nhiều file
-        point_id = str(uuid.uuid5(
-            uuid.NAMESPACE_DNS,
-            f"{chunk.source_file}_{chunk.page}_{chunk.section}_{i}"
-        ))
-
+    for chunk, vec in zip(chunks, vectors):
         payload = {
             "text": chunk.text,
             "source_file": chunk.source_file,
             "page": chunk.page,
             "section": chunk.section,
             "content_type": chunk.content_type,
+            "doc_id": str(chunk.doc_id),
+            "parent_id": chunk.parent_id,
         }
-        if hasattr(chunk, "subject") and chunk.subject:
+        if owner_id:
+            payload["owner_id"] = str(owner_id)
+        if getattr(chunk, "subject", None):
             payload["subject"] = chunk.subject
-        if hasattr(chunk, "doc_id") and chunk.doc_id:
-            payload["doc_id"] = str(chunk.doc_id)
-        elif hasattr(chunk, "metadata") and getattr(chunk.metadata, "doc_id", None):
-            payload["doc_id"] = str(chunk.metadata.doc_id)
 
-        points.append(PointStruct(
-            id=point_id,
-            vector={"dense": vec["dense"], "sparse": vec["sparse"]},
-            payload=payload,
-        ))
+        points.append(
+            PointStruct(
+                id=chunk.id,  # uuid4 duy nhất, KHÔNG suy từ tên file
+                vector={"dense": vec["dense"], "sparse": vec["sparse"]},
+                payload=payload,
+            )
+        )
 
-    client.upsert(collection_name=COLLECTION_NAME, points=points)
-    logger.info("Đã upsert %d points vào collection %s", len(points), COLLECTION_NAME)
+    for i in range(0, len(points), UPSERT_BATCH):
+        client.upsert(collection_name=COLLECTION_NAME, points=points[i : i + UPSERT_BATCH])
+    logger.info("Đã upsert %d points vào %s", len(points), COLLECTION_NAME)
 
 
-def _resolve_document_identifiers(document_ids: list[str]) -> list[str]:
-    """
-    Nhận danh sách document_ids (có thể là UUID của Document trong Postgres, hoặc filename).
-    Truy vấn Postgres để lấy thêm cả filename tương ứng (hoặc ngược lại)
-    nhằm đảm bảo tìm kiếm trong Qdrant luôn trúng cả doc_id lẫn source_file.
-    """
-    if not document_ids:
-        return []
+def delete_document_vectors(document_id: str) -> None:
+    """Xoá toàn bộ vector của 1 tài liệu (gọi khi user xoá tài liệu)."""
+    ensure_collection()
+    client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=FilterSelector(
+            filter=Filter(
+                must=[FieldCondition(key="doc_id", match=MatchValue(value=str(document_id)))]
+            )
+        ),
+    )
+    logger.info("Đã xoá vector của document %s", document_id)
 
-    identifiers = set(str(d) for d in document_ids if d)
-    try:
-        from app.db.session import SessionLocal
-        from app.models.db_models import Document
-        with SessionLocal() as db:
-            docs = db.query(Document).filter(
-                (Document.id.in_(list(identifiers))) | (Document.filename.in_(list(identifiers)))
-            ).all()
-            for doc in docs:
-                identifiers.add(str(doc.id))
-                if doc.filename:
-                    identifiers.add(doc.filename)
-    except Exception as exc:
-        logger.warning("Không thể resolve document_ids từ DB: %s", exc)
 
-    return [x for x in identifiers if x]
+def _doc_filter(document_ids: list[str], metadata_filter: dict | None = None) -> Filter:
+    must = [FieldCondition(key="doc_id", match=MatchAny(any=[str(d) for d in document_ids]))]
+    for key, value in (metadata_filter or {}).items():
+        if value is not None:
+            must.append(FieldCondition(key=key, match=MatchValue(value=value)))
+    return Filter(must=must)
+
+
+def _format_point(pt, score: float | None = None) -> dict[str, Any]:
+    payload = pt.payload or {}
+    return {
+        "id": pt.id,
+        "score": pt.score if score is None else score,
+        "text": payload.get("text", ""),
+        "source_file": payload.get("source_file"),
+        "page": payload.get("page"),
+        "section": payload.get("section"),
+        "content_type": payload.get("content_type"),
+        "doc_id": payload.get("doc_id"),
+        "parent_id": payload.get("parent_id"),
+        "payload": payload,
+    }
 
 
 def hybrid_search(
@@ -123,103 +149,42 @@ def hybrid_search(
     metadata_filter: dict | None = None,
     document_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    Hybrid search kết hợp Dense (Cosine) và Sparse (Lexical) qua Reciprocal Rank Fusion (RRF).
-    
-    Hỗ trợ metadata filtering theo các trường trong payload (ví dụ: source_file, subject)
-    hoặc lọc theo danh sách document_ids.
-    """
+    """Hybrid search Dense + Sparse (RRF). `document_ids` là BẮT BUỘC."""
+    if not document_ids:
+        logger.warning("hybrid_search gọi không kèm document_ids -> trả rỗng (chặn tìm toàn cục).")
+        return []
+
     ensure_collection()
+    qdrant_filter = _doc_filter(document_ids, metadata_filter)
 
-    # 1. Xây dựng bộ lọc Metadata nếu có
-    filter_conditions = []
-    if metadata_filter:
-        for key, value in metadata_filter.items():
-            if value is not None:
-                filter_conditions.append(
-                    FieldCondition(key=key, match=MatchValue(value=value))
-                )
-    if document_ids:
-        all_ids = _resolve_document_identifiers(document_ids)
-        if all_ids:
-            filter_conditions.append(
-                Filter(
-                    should=[
-                        FieldCondition(key="doc_id", match=MatchAny(any=all_ids)),
-                        FieldCondition(key="source_file", match=MatchAny(any=all_ids)),
-                    ]
-                )
-            )
-    qdrant_filter = Filter(must=filter_conditions) if filter_conditions else None
-
-    # 2. Prefetch cho Dense search
-    prefetch_dense = Prefetch(
-        query=dense_vec,
-        using="dense",
-        limit=top_k * 2,
-        filter=qdrant_filter,
-    )
-
-    # 3. Prefetch cho Sparse search (Lexical weights từ BGE-M3)
-    indices = sparse_vec.get("indices", [])
-    values = sparse_vec.get("values", [])
+    prefetch_dense = Prefetch(query=dense_vec, using="dense", limit=top_k * 2, filter=qdrant_filter)
     prefetch_sparse = Prefetch(
-        query=SparseVector(indices=indices, values=values),
+        query=SparseVector(indices=sparse_vec.get("indices", []), values=sparse_vec.get("values", [])),
         using="sparse",
         limit=top_k * 2,
         filter=qdrant_filter,
     )
 
-    # 4. Hợp nhất bằng Reciprocal Rank Fusion (RRF) qua Query API của Qdrant
     response = client.query_points(
         collection_name=COLLECTION_NAME,
         prefetch=[prefetch_dense, prefetch_sparse],
         query=FusionQuery(fusion=Fusion.RRF),
         limit=top_k,
     )
-
-    # 5. Định dạng kết quả trả về
-    results = []
-    for pt in response.points:
-        payload = pt.payload or {}
-        results.append({
-            "id": pt.id,
-            "score": pt.score,
-            "text": payload.get("text", ""),
-            "source_file": payload.get("source_file"),
-            "page": payload.get("page"),
-            "section": payload.get("section"),
-            "content_type": payload.get("content_type"),
-            "payload": payload,
-        })
-
-    return results
+    return [_format_point(pt) for pt in response.points]
 
 
 def get_all_chunks_for_documents(document_ids: list[str]) -> list[dict[str, Any]]:
-    """
-    Lấy toàn bộ chunk thuộc danh sách document_ids (dùng scroll API không qua vector search).
-    Cần thiết cho Quiz & Summary Agent khi tóm tắt đầy đủ tài liệu.
-    """
-    ensure_collection()
+    """Scroll toàn bộ chunk của các document (phục vụ tóm tắt đầy đủ)."""
     if not document_ids:
         return []
+    ensure_collection()
+    qdrant_filter = _doc_filter(document_ids)
 
-    all_ids = _resolve_document_identifiers(document_ids)
-    if not all_ids:
-        return []
-
-    qdrant_filter = Filter(
-        should=[
-            FieldCondition(key="doc_id", match=MatchAny(any=all_ids)),
-            FieldCondition(key="source_file", match=MatchAny(any=all_ids)),
-        ]
-    )
-
-    results = []
+    results: list[dict[str, Any]] = []
     offset = None
     while True:
-        points, next_offset = client.scroll(
+        points, offset = client.scroll(
             collection_name=COLLECTION_NAME,
             scroll_filter=qdrant_filter,
             limit=100,
@@ -227,20 +192,7 @@ def get_all_chunks_for_documents(document_ids: list[str]) -> list[dict[str, Any]
             with_payload=True,
             with_vectors=False,
         )
-        for pt in points:
-            payload = pt.payload or {}
-            results.append({
-                "id": pt.id,
-                "score": 1.0,
-                "text": payload.get("text", ""),
-                "source_file": payload.get("source_file"),
-                "page": payload.get("page"),
-                "section": payload.get("section"),
-                "content_type": payload.get("content_type"),
-                "payload": payload,
-            })
-        if next_offset is None:
+        results.extend(_format_point(pt, score=1.0) for pt in points)
+        if offset is None:
             break
-        offset = next_offset
-
     return results

@@ -5,7 +5,7 @@ import {
   Zap,
   AlertCircle
 } from 'lucide-react';
-import { loginUser, registerUser, verifyOtp, googleAuth, type UserProfile } from '../services/api';
+import { loginUser, registerUser, verifyOtp, googleAuth, demoLogin, type UserProfile } from '../services/api';
 
 const GOOGLE_CLIENT_ID = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || '';
 const IS_DUMMY_CLIENT_ID = !GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes('dcnqpf7d8mtr1rdt7n42j4ggph90fda6');
@@ -35,19 +35,18 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
   const [googleLoading, setGoogleLoading] = useState(false);
 
   // Quick Demo Access
-  const handleQuickDemo = () => {
-    onSuccess(
-      {
-        id: 'demo_user',
-        email: 'scholar@studyrag.dev',
-        full_name: 'Học Viên Nghiên Cứu',
-        auth_provider: 'local',
-        is_verified: true,
-        created_at: new Date().toISOString(),
-      },
-      'sr_demo_token_authenticated'
-    );
-  };
+  const handleQuickDemo = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await demoLogin();
+      if (res.user && res.token) onSuccess(res.user, res.token);
+    } catch (err: any) {
+    setError(err.message || 'Không thể vào chế độ dùng thử');
+  } finally {
+    setLoading(false);
+  }
+};
 
   // Google Login
   const handleGoogleLogin = () => {

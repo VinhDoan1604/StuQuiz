@@ -106,13 +106,36 @@ class ChatRequest(BaseModel):
 
 
 class ReflectionTrace(BaseModel):
-    """Hiển thị trực tiếp ra UI — xem mục 3 tài liệu (transparency thật)."""
     context_grade: float | None = None
     context_sufficient: bool | None = None
+    context_verified: bool | None = None   # False = bộ chấm lỗi, điểm KHÔNG đáng tin
+    context_forced: bool | None = None     # True = chưa đạt nhưng bị ép chấp nhận (hết lượt)
     rewritten_queries: list[str] = []
     answer_grade: float | None = None
     answer_faithful: bool | None = None
+    answer_verified: bool | None = None
+    answer_forced: bool | None = None
     num_loops: int = 0
+
+
+class QuizQuestionOut(BaseModel):          # trả cho client: KHÔNG có đáp án/giải thích
+    attempt_id: str
+    question: str
+    choices: list[str]
+    topic: str
+    difficulty: Literal["easy", "medium", "hard"]
+
+
+class QuizAnswerRequest(BaseModel):
+    attempt_id: str
+    choice: str
+
+
+class QuizAnswerResult(BaseModel):
+    attempt_id: str
+    is_correct: bool
+    correct_choice: str
+    explanation: str
 
 
 class ChatResponse(BaseModel):

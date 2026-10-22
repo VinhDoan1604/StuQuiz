@@ -39,3 +39,7 @@ Thumbs.db
 
 # private
 docs/
+
+# Evaluation
+eval/results/
+eval/corpus/

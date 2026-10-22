@@ -106,6 +106,9 @@ def normalize_chunk(candidate: dict[str, Any]) -> dict[str, Any]:
         "content_type": metadata.get("content_type", candidate.get("content_type", "content")),
         "doc_id": metadata.get("doc_id", candidate.get("doc_id")),
         "score": candidate.get("rerank_score", candidate.get("score", 0.0)),
+        "parent_id": metadata.get("parent_id", candidate.get("parent_id")),
+        "snippet": candidate.get("snippet"),
+        "expanded": candidate.get("expanded", False),
     }
 
 

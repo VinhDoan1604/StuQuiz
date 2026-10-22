@@ -112,6 +112,14 @@ export function App() {
     }
   };
 
+  useEffect(() => {
+    const onExpired = () => handleLogout();
+    window.addEventListener('auth:expired', onExpired);
+    // Có user lưu sẵn nhưng mất token => đăng xuất sạch
+    if (user && !localStorage.getItem('study_token')) handleLogout();
+    return () => window.removeEventListener('auth:expired', onExpired);
+  }, []);
+
   // 1. GIAO DIỆN BAN ĐẦU: ĐĂNG NHẬP (Nếu chưa đăng nhập)
   if (!user) {
     return <AuthScreen onSuccess={handleLoginSuccess} />;

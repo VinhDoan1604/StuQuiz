@@ -42,6 +42,9 @@ interface Message {
   liveEvents?: AgentStepEvent[];
 }
 
+// [n] -> link nội bộ #cite-n (bỏ qua [n](...) đã là link markdown)
+const linkifyCitations = (text: string) => text.replace(/\[(\d{1,2})\](?!\()/g, '[[$1]](#cite-$1)');
+
 export const ChatView: React.FC<ChatViewProps> = ({
   documents = [],
   allDocuments = [],
@@ -357,8 +360,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 }}>
                   {msg.role === 'assistant' ? (
                     <div className="markdown-body">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {msg.content}
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          a: ({ href, children }) => {
+                            const m = href?.match(/^#cite-(\d+)$/);
+                            if (m) {
+                              const n = Number(m[1]);
+                              const cites = msg.citations ?? [];
+                              const idx = cites.some((c) => c.index != null) ? cites.findIndex((c) => c.index === n) : n - 1;
+                              return idx >= 0 && cites[idx] ? (
+                                <button className="cite-chip" onClick={() => openCitationDetail(cites, idx)} title="Xem đoạn trích gốc">{n}</button>
+                              ) : (
+                                <span>[{n}]</span>
+                              );
+                            }
+                            return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
+                          },
+                        }}
+                      >
+                        {linkifyCitations(msg.content)}
                       </ReactMarkdown>
                     </div>
                   ) : (
@@ -397,7 +418,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         }}
                       >
                         <FileText size={11} />
-                        <span>[{cIdx + 1}] {c.file ? c.file.split(/[\\/]/).pop() : 'Tài liệu'}</span>
+                        <span>[{c.index ?? cIdx + 1}] {c.file ? c.file.split(/[\\/]/).pop() : 'Tài liệu'}</span>
                         {c.page && <span>(tr.{c.page})</span>}
                       </button>
                     ))}

@@ -1,228 +1,170 @@
-from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, Header, Depends, BackgroundTasks, HTTPException
-from sqlalchemy.orm import Session
-import uuid
+"""routes_documents v2 (thay thế bản Part 1): hỗ trợ txt/md, lưu parent chunk, dọn parent khi xoá."""
+import asyncio
 import logging
+import os
+import uuid
 
-from app.db.session import get_db, SessionLocal
-from app.ingestion.parsers import parse_document
-from app.ingestion.cleaning import clean_document
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy.orm import Session
+
 from app.chunking.semantic_chunker import chunk_document
+from app.config import settings
+from app.core.ownership import get_owned_document
+from app.core.security import get_current_user
+from app.db.session import SessionLocal, get_db
 from app.embedding.bge_m3_embedder import embed_chunks
-from app.indexing.qdrant_store import upsert_chunks
-from app.models.db_models import Document, User, StudySpace
+from app.indexing.qdrant_store import delete_document_vectors, upsert_chunks
+from app.ingestion.cleaning import clean_document
+from app.ingestion.parsers import ParsingError, UnsupportedFileTypeError, parse_document
+from app.models.db_models import Document, ParentChunk, StudySpace, User
 
 router = APIRouter()
 logger = logging.getLogger("app.api.documents")
 
-
-def _resolve_user_id(uid: Optional[str], db: Session) -> Optional[str]:
-    if not uid:
-        return None
-    try:
-        val = str(uuid.UUID(str(uid)))
-        user = db.query(User).filter(User.id == val).first()
-        if user:
-            return str(user.id)
-    except (ValueError, AttributeError):
-        val = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(uid)))
-        user = db.query(User).filter(User.id == val).first()
-        if user:
-            return str(user.id)
-    return None
+ALLOWED_EXTENSIONS = {"pdf", "docx", "pptx", "txt", "md"}
 
 
-def _process_document_indexing(doc_id: str, parsed, filename: str):
-    """
-    Xử lý làm sạch, chunking ngữ nghĩa và vector hóa BGE-M3 trong nền.
-    Tối ưu hóa:
-    - Chỉ vector hóa child chunks (và section độc lập nếu không có con),
-      loại bỏ 100% các parent chunk khổng lồ 1500 tokens gây ngốn CPU và nhiễu retrieval.
-    - BGE-M3 chạy chế độ inference tối ưu (max_length=512, batch nhỏ, đa luồng CPU tối ưu).
-    """
+def _process_document_indexing(doc_id: str, owner_id: str, parsed, filename: str):
+    """Làm sạch -> chunking -> lưu parent (Postgres) -> embed child (BGE-M3) -> upsert Qdrant."""
     with SessionLocal() as db:
         doc = db.query(Document).filter(Document.id == doc_id).first()
         if not doc:
-            logger.error("Không tìm thấy document ID=%s trong database để lập chỉ mục.", doc_id)
+            logger.error("Không tìm thấy document ID=%s để lập chỉ mục.", doc_id)
             return
 
         try:
-            logger.info(">>> [Task %s] Đang làm sạch tài liệu '%s'...", doc_id, filename)
             cleaned = clean_document(parsed)
-
-            logger.info(">>> [Task %s] Đang phân đoạn cấu trúc ngữ nghĩa (Semantic Chunking)...", doc_id)
             all_chunks = chunk_document(cleaned, doc_id=doc_id)
 
-            # Lọc chỉ lấy child chunks để lập chỉ mục vector (chuẩn xác & nhanh gấp 3-4 lần)
-            child_chunks = [c for c in all_chunks if getattr(c, "level", "child") == "child"]
-            embeddable_chunks = child_chunks if child_chunks else all_chunks
-
-            for c in embeddable_chunks:
+            children = [c for c in all_chunks if c.level == "child"]
+            embeddable = children or all_chunks
+            for c in embeddable:
                 c.doc_id = doc_id
-                if hasattr(c, "metadata") and c.metadata and not c.metadata.source_file:
+                if c.metadata and not c.metadata.source_file:
                     c.metadata.source_file = filename
 
-            logger.info(
-                ">>> [Task %s] Chọn %d/%d chunks hiệu dụng để vector hóa (BGE-M3)...",
-                doc_id, len(embeddable_chunks), len(all_chunks)
+            # Parent chỉ có ý nghĩa khi child tồn tại (child trỏ tới parent qua parent_id)
+            parents = [c for c in all_chunks if c.level == "parent"] if children else []
+            db.query(ParentChunk).filter(ParentChunk.doc_id == doc_id).delete(synchronize_session=False)
+            db.add_all(
+                ParentChunk(
+                    id=p.id, doc_id=doc_id, text=p.text, section=p.metadata.section,
+                    page=p.metadata.page, token_count=p.token_count,
+                )
+                for p in parents
             )
 
-            vectors = embed_chunks([c.text for c in embeddable_chunks])
+            vectors = embed_chunks([c.text for c in embeddable])
+            upsert_chunks(embeddable, vectors, owner_id=owner_id)
 
-            logger.info(">>> [Task %s] Upsert %d vectors vào Qdrant Store...", doc_id, len(vectors))
-            upsert_chunks(embeddable_chunks, vectors)
-
-            doc.num_chunks = len(embeddable_chunks)
+            doc.num_chunks = len(embeddable)
             doc.status = "ready"
             doc.error_message = None
-            db.commit()
-            logger.info(
-                ">>> [Hoàn tất Task %s] Lập chỉ mục thành công tài liệu '%s' với %d chunks!",
-                doc_id, filename, len(embeddable_chunks)
-            )
-
+            db.commit()  # parent + trạng thái cùng 1 transaction
+            logger.info("[Task %s] '%s': %d child, %d parent.", doc_id, filename, len(embeddable), len(parents))
         except Exception as exc:
-            logger.error(
-                ">>> [Task %s] Lỗi khi xử lý lập chỉ mục tài liệu '%s': %s",
-                doc_id, filename, exc, exc_info=True
-            )
-            doc.status = "failed"
-            doc.error_message = str(exc)
-            db.commit()
+            logger.error("[Task %s] Lỗi lập chỉ mục '%s': %s", doc_id, filename, exc, exc_info=True)
+            db.rollback()  # bỏ parent dở dang
+            doc = db.query(Document).filter(Document.id == doc_id).first()
+            if doc:
+                doc.status = "failed"
+                doc.error_message = str(exc)[:500]
+                db.commit()
 
 
 @router.post("/upload")
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    user_id: Optional[str] = Form(None),
-    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
     sync: bool = Form(False),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Tải lên tài liệu.
-    - Mặc định: Phân tích nhanh (PyMuPDF < 0.2s), lưu bản ghi ở trạng thái 'processing'
-      và trả về NGAY LẬP TỨC (< 1 giây) để giao diện không bị treo / đơ.
-      Quá trình nhúng vector BGE-M3 chạy nền mượt mà.
-    - sync=true: Xử lý đồng bộ nếu client yêu cầu (chờ xong mới trả về).
-    """
+    filename = os.path.basename(file.filename or "").strip()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Định dạng '.{ext}' chưa được hỗ trợ. Hỗ trợ: {sorted(ALLOWED_EXTENSIONS)}.",
+        )
+
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    if file.size is not None and file.size > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Tệp vượt quá {settings.max_upload_mb}MB.")
     raw_bytes = await file.read()
-    effective_user_id = _resolve_user_id(user_id or x_user_id, db)
-    logger.info(">>> [Upload] Nhận file: '%s' (%d bytes) từ user=%s. Bắt đầu parse nội dung...", file.filename, len(raw_bytes), effective_user_id)
+    if len(raw_bytes) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Tệp vượt quá {settings.max_upload_mb}MB.")
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Tệp rỗng.")
 
-    # 1. Trích xuất cấu trúc văn bản nhanh (< 0.2s)
-    parsed = parse_document(raw_bytes, filename=file.filename)
+    try:
+        parsed = await asyncio.to_thread(parse_document, raw_bytes, filename)
+    except UnsupportedFileTypeError as exc:
+        raise HTTPException(status_code=415, detail=str(exc))
+    except ParsingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not parsed.blocks:
+        raise HTTPException(status_code=422, detail="Không trích xuất được nội dung nào từ tệp này.")
+
     doc_id = str(uuid.uuid4())
-
-    # 2. Tạo bản ghi ban đầu trong Postgres
     doc = Document(
-        id=doc_id,
-        filename=file.filename,
-        file_type=parsed.file_type,
-        num_chunks=0,
-        status="processing",
-        owner_id=effective_user_id,
+        id=doc_id, filename=filename, file_type=parsed.file_type,
+        num_chunks=0, status="processing", owner_id=user.id,
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
 
     if sync:
-        logger.info(">>> [Upload] Yêu cầu xử lý đồng bộ (sync=True)...")
-        _process_document_indexing(doc_id, parsed, file.filename)
+        await asyncio.to_thread(_process_document_indexing, doc_id, str(user.id), parsed, filename)
         db.refresh(doc)
-        return {
-            "document_id": doc.id,
-            "num_chunks": doc.num_chunks,
-            "status": doc.status,
-            "filename": doc.filename,
-        }
+        return {"document_id": doc.id, "num_chunks": doc.num_chunks, "status": doc.status, "filename": doc.filename}
 
-    # 3. Đưa công việc nhúng vector nặng vào BackgroundTasks
-    background_tasks.add_task(_process_document_indexing, doc_id, parsed, file.filename)
-
-    logger.info(">>> [Upload] Đã tiếp nhận file '%s' (ID=%s). Đang xử lý nền...", file.filename, doc.id)
+    background_tasks.add_task(_process_document_indexing, doc_id, str(user.id), parsed, filename)
     return {
-        "document_id": doc.id,
-        "num_chunks": 0,
-        "status": "processing",
-        "filename": doc.filename,
-        "message": "Tài liệu đã được tải lên thành công và đang được lập chỉ mục trong nền.",
+        "document_id": doc.id, "num_chunks": 0, "status": "processing", "filename": doc.filename,
+        "message": "Tài liệu đã được tải lên và đang được lập chỉ mục trong nền.",
     }
 
 
 @router.get("/{document_id}/status")
-def get_document_status(document_id: str, db: Session = Depends(get_db)):
-    """Kiểm tra tiến trình lập chỉ mục của tài liệu."""
-    doc = db.query(Document).filter(Document.id == document_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu.")
-
+def get_document_status(document_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = get_owned_document(db, user, document_id)
     return {
-        "id": str(doc.id),
-        "filename": doc.filename,
-        "status": getattr(doc, "status", "ready") or "ready",
-        "num_chunks": doc.num_chunks or 0,
-        "error": getattr(doc, "error_message", None),
+        "id": str(doc.id), "filename": doc.filename, "status": doc.status or "ready",
+        "num_chunks": doc.num_chunks or 0, "error": doc.error_message,
         "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
     }
 
 
 @router.delete("/{document_id}")
-def delete_document(
-    document_id: str,
-    user_id: Optional[str] = None,
-    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
-    db: Session = Depends(get_db),
-):
-    """Xóa tài liệu khỏi database và cập nhật các Study Space liên quan."""
-    effective_user_id = _resolve_user_id(user_id or x_user_id, db)
-    query = db.query(Document).filter(Document.id == document_id)
-    if effective_user_id:
-        query = query.filter(Document.owner_id == effective_user_id)
+def delete_document(document_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = get_owned_document(db, user, document_id)
+    doc_id = str(doc.id)
 
-    doc = query.first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu cần xóa.")
+    for s in db.query(StudySpace).filter(StudySpace.user_id == user.id).all():
+        if s.document_ids and doc_id in s.document_ids:
+            s.document_ids = [d for d in s.document_ids if d != doc_id]
 
-    # Xóa tham chiếu document_id trong các StudySpace
-    spaces = db.query(StudySpace).all()
-    for s in spaces:
-        if s.document_ids and document_id in s.document_ids:
-            updated_ids = [did for did in s.document_ids if did != document_id]
-            s.document_ids = updated_ids
-
+    db.query(ParentChunk).filter(ParentChunk.doc_id == doc_id).delete(synchronize_session=False)
     db.delete(doc)
     db.commit()
-    logger.info(">>> Đã xóa thành công tài liệu ID=%s", document_id)
-    return {"message": "Đã xóa tài liệu thành công.", "document_id": document_id}
+
+    try:
+        delete_document_vectors(doc_id)
+    except Exception as exc:
+        logger.error("Không xoá được vector của document %s: %s", doc_id, exc)
+
+    return {"message": "Đã xóa tài liệu.", "document_id": doc_id}
 
 
 @router.get("")
-def list_documents(
-    user_id: Optional[str] = None,
-    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
-    db: Session = Depends(get_db),
-):
-    """Trả về danh sách tài liệu riêng của người dùng."""
-    effective_user_id = _resolve_user_id(user_id or x_user_id, db)
-    query = db.query(Document)
-    if effective_user_id:
-        query = query.filter(Document.owner_id == effective_user_id)
-    else:
-        return []
-
-    docs = query.order_by(Document.uploaded_at.desc()).all()
+def list_documents(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    docs = db.query(Document).filter(Document.owner_id == user.id).order_by(Document.uploaded_at.desc()).all()
     return [
         {
-            "id": d.id,
-            "filename": d.filename,
-            "file_type": d.file_type,
-            "subject": d.subject,
-            "num_chunks": d.num_chunks,
-            "status": getattr(d, "status", "ready") or "ready",
-            "error_message": getattr(d, "error_message", None),
+            "id": str(d.id), "filename": d.filename, "file_type": d.file_type, "subject": d.subject,
+            "num_chunks": d.num_chunks, "status": d.status or "ready", "error_message": d.error_message,
             "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
         }
         for d in docs

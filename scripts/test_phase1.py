@@ -95,7 +95,10 @@ def test_qdrant_store_definitions():
     ), f"Tham số hybrid_search không đúng: {params}"
 
     sig_upsert = inspect.signature(upsert_chunks)
-    assert list(sig_upsert.parameters.keys()) == ["chunks", "vectors"]
+    assert list(sig_upsert.parameters.keys()) in (
+        ["chunks", "vectors"],
+        ["chunks", "vectors", "owner_id"],
+    )
 
     print("=> Qdrant Store Interface hợp lệ!\n")
 

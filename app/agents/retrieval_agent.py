@@ -45,7 +45,8 @@ from app.llm.utils import LLMCallError, acall_llm_text
 from app.retrieval.helpers import arerank, normalize_chunk, retrieve_top_k
 from app.agents.state import GraphState
 from app.retrieval.query_processing import decompose_query, rewrite_query
-
+from app.config import settings
+from app.retrieval.expansion import aexpand_with_parents
 logger = logging.getLogger(__name__)
 
 HYBRID_TOP_K = 20
@@ -188,6 +189,9 @@ async def run_retrieval(state: GraphState) -> GraphState:
             pool = pool[:final_top_k]
     else:
         pool = pool[:final_top_k]
+
+    if intent in ("qa", "teaching") and settings.enable_parent_expansion:
+        pool = await aexpand_with_parents(pool, settings.parent_context_max_tokens)
 
     logger.info(
         "run_retrieval: intent=%s, %d search-query(ies), %d chunk cuối cùng.",

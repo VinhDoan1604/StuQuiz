@@ -35,6 +35,7 @@ class User(Base):
     verification_code = Column(String, nullable=True)
     verification_code_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    verification_attempts = Column(Integer, default=0, nullable=False)
 
     documents = relationship("Document", back_populates="owner")
     sessions = relationship("ChatSession", back_populates="user")
@@ -121,6 +122,9 @@ class QuizAttempt(Base):
     user_choice = Column(String, nullable=True)
     is_correct = Column(Boolean, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    explanation = Column(Text, nullable=True)
+    difficulty = Column(String, nullable=True)
+    answered_at = Column(DateTime, nullable=True)
 
     space = relationship("StudySpace", back_populates="quiz_attempts")
 
@@ -142,3 +146,13 @@ class MasteryRecord(Base):
     mastery_score = Column(Integer, default=0)   # 0-100, thuật toán ở stub
     last_reviewed_at = Column(DateTime, nullable=True)
     next_review_due_at = Column(DateTime, nullable=True)  # spaced repetition
+
+class ParentChunk(Base):
+    """Section/parent chunk: không nhúng vector; dùng mở rộng ngữ cảnh sau rerank."""
+    __tablename__ = "parent_chunks"
+    id = Column(String, primary_key=True)            # = Chunk.id của parent
+    doc_id = Column(String, index=True, nullable=False)
+    text = Column(Text, nullable=False)
+    section = Column(String, nullable=True)
+    page = Column(Integer, nullable=True)
+    token_count = Column(Integer, default=0)

@@ -91,93 +91,84 @@ def _loops_exhausted(state: GraphState) -> bool:
     return state.get("num_reflection_loops", 0) >= settings.max_reflection_loops
 
 
+
 async def grade_context(state: GraphState) -> ReflectionResult:
-    """
-    Chấm độ liên quan + đầy đủ của state["retrieved_chunks"] so với câu
-    hỏi hiện tại (rewritten_queries[-1] nếu có, else user_query).
-
-    KHÔNG mutate state — caller (graph, Phase 5) chịu trách nhiệm append
-    kết quả vào state["reflection_history"] và quyết định routing (loop
-    lại retrieval hay đi tiếp generation).
-
-    Khi đã hết `settings.max_reflection_loops` vòng lặp mà vẫn chưa đủ:
-    LUÔN trả về context_sufficient=True (ép graph đi tiếp, tránh lặp vô
-    hạn), kèm feedback đặc biệt để Generation Agent biết cần trả lời trung
-    thực về phần thiếu thay vì cố "lấp đầy" bằng suy diễn — đúng yêu cầu
-    "nếu hết vòng lặp mà vẫn không đủ -> trả lời tài liệu chưa đủ thông
-    tin, KHÔNG bịa".
-    """
     rewritten = state.get("rewritten_queries") or []
     query = rewritten[-1] if rewritten else state.get("user_query", "")
     chunks = state.get("retrieved_chunks") or []
 
     if not chunks:
-        sufficient = _loops_exhausted(state)
+        exhausted = _loops_exhausted(state)
         feedback = "Không truy xuất được context nào liên quan đến câu hỏi."
-        if sufficient:
+        if exhausted:
             feedback = f"[Đã hết số lần thử lại] {feedback} Hãy trả lời trung thực là tài liệu chưa đề cập."
-        return ReflectionResult(context_grade=0.0, context_sufficient=sufficient, feedback=feedback)
+        return ReflectionResult(
+            context_grade=0.0, context_sufficient=exhausted, feedback=feedback, graded=True, forced=exhausted
+        )
 
     context_block = format_chunks_for_prompt(chunks)
     user_prompt = f"Câu hỏi: {query}\n\nContext:\n{context_block}"
 
+    graded = True
     try:
         result = await acall_structured("grade", _CONTEXT_GRADE_SYSTEM_PROMPT, user_prompt, ContextGradeOutput)
-        grade = (result.relevance + result.sufficiency) / 2
+        grade: float | None = (result.relevance + result.sufficiency) / 2
         sufficient = grade >= CONTEXT_SUFFICIENT_THRESHOLD
         feedback = result.feedback
     except LLMCallError as exc:
-        logger.error("grade_context: chấm điểm thất bại (%s) — fail-open (coi như đủ).", exc)
-        grade, sufficient, feedback = 1.0, True, ""
+        logger.error("grade_context: chấm điểm thất bại (%s) — fail-open, ĐÁNH DẤU graded=False.", exc)
+        grade, sufficient, feedback, graded = None, True, "", False
 
-    if not sufficient and _loops_exhausted(state):
-        logger.warning(
-            "grade_context: hết %d vòng lặp mà context vẫn chưa đủ — ép sufficient=True để dừng loop.",
-            settings.max_reflection_loops,
-        )
+    forced = False
+    if graded and not sufficient and _loops_exhausted(state):
+        logger.warning("grade_context: hết %d vòng lặp, context chưa đủ — ép chấp nhận.", settings.max_reflection_loops)
         feedback = (
             f"[Đã hết số lần thử lại] {feedback} Hãy trả lời trung thực dựa trên context hiện có, "
             f"và nêu rõ phần nào tài liệu chưa đề cập thay vì suy diễn."
         )
-        sufficient = True
+        sufficient, forced = True, True
 
-    return ReflectionResult(context_grade=round(grade, 3), context_sufficient=sufficient, feedback=feedback)
+    return ReflectionResult(
+        context_grade=round(grade, 3) if grade is not None else None,
+        context_sufficient=sufficient,
+        feedback=feedback,
+        graded=graded,
+        forced=forced,
+    )
 
 
 async def grade_answer(state: GraphState) -> ReflectionResult:
-    """
-    Chấm faithfulness (chống hallucination) + completeness của
-    state["answer_draft"] so với state["retrieved_chunks"] đã dùng để sinh
-    câu trả lời đó. KHÔNG mutate state — xem docstring grade_context.
-
-    answer_grade = 0.6 * faithfulness + 0.4 * completeness — faithfulness
-    nặng ký hơn vì 1 câu bịa đặt nghiêm trọng hơn nhiều so với thiếu 1 ý,
-    đúng tinh thần Self-RAG (ưu tiên KHÔNG hallucinate hơn là đầy đủ).
-    """
     answer = state.get("answer_draft", "") or ""
     chunks = state.get("retrieved_chunks") or []
 
     if not answer.strip():
-        return ReflectionResult(answer_grade=0.0, answer_faithful=False, feedback="Câu trả lời rỗng.")
+        return ReflectionResult(
+            answer_grade=0.0, answer_faithful=False, feedback="Câu trả lời rỗng.", graded=True, forced=False
+        )
 
     context_block = format_chunks_for_prompt(chunks)
     user_prompt = f"Context:\n{context_block}\n\nCâu trả lời cần chấm:\n{answer}"
 
+    graded = True
     try:
         result = await acall_structured("grade", _ANSWER_GRADE_SYSTEM_PROMPT, user_prompt, AnswerGradeOutput)
-        grade = 0.6 * result.faithfulness + 0.4 * result.completeness
+        grade: float | None = 0.6 * result.faithfulness + 0.4 * result.completeness
         faithful = result.faithfulness >= ANSWER_ACCEPT_THRESHOLD
         feedback = result.feedback
     except LLMCallError as exc:
-        logger.error("grade_answer: chấm điểm thất bại (%s) — fail-open (coi như đạt).", exc)
-        grade, faithful, feedback = 1.0, True, ""
+        logger.error("grade_answer: chấm điểm thất bại (%s) — fail-open, ĐÁNH DẤU graded=False.", exc)
+        grade, faithful, feedback, graded = None, True, "", False
 
-    if (not faithful or grade < ANSWER_ACCEPT_THRESHOLD) and _loops_exhausted(state):
-        logger.warning(
-            "grade_answer: hết %d vòng lặp mà câu trả lời vẫn chưa đạt — chấp nhận để dừng loop.",
-            settings.max_reflection_loops,
-        )
+    forced = False
+    if graded and (not faithful or (grade is not None and grade < ANSWER_ACCEPT_THRESHOLD)) and _loops_exhausted(state):
+        logger.warning("grade_answer: hết %d vòng lặp, câu trả lời chưa đạt — ép chấp nhận.", settings.max_reflection_loops)
         feedback = f"[Đã hết số lần thử lại] {feedback} Chấp nhận bản trả lời hiện tại dù chưa hoàn hảo."
-        faithful = True
+        faithful, forced = True, True
 
-    return ReflectionResult(answer_grade=round(grade, 3), answer_faithful=faithful, feedback=feedback)
+    return ReflectionResult(
+        answer_grade=round(grade, 3) if grade is not None else None,
+        answer_faithful=faithful,
+        feedback=feedback,
+        graded=graded,
+        forced=forced,
+    )

@@ -1,21 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  FileText, 
-  Upload, 
-  Search, 
-  ChevronLeft, 
-  MessageSquare, 
-  Plus, 
-  Trash2, 
+import {
+  FileText,
+  Upload,
+  Search,
+  ChevronLeft,
+  MessageSquare,
+  Plus,
+  Trash2,
   FolderPlus,
   Loader2,
   AlertTriangle
 } from 'lucide-react';
-import { 
-  uploadDocument, 
+import {
+  uploadDocument,
   fetchSpaceChatHistory,
-  type DocumentItem, 
-  type StudySpaceItem 
+  type DocumentItem,
+  type StudySpaceItem
 } from '../services/api';
 import { UploadProgressBar, type UploadProgressData } from './UploadProgressBar';
 
@@ -128,7 +128,7 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
     }
   };
 
-  const filteredDocs = documents.filter(d => 
+  const filteredDocs = documents.filter(d =>
     d.filename.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
@@ -204,9 +204,9 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
           </button>
         </div>
 
-        <button 
-          onClick={onToggle} 
-          className="btn-ghost" 
+        <button
+          onClick={onToggle}
+          className="btn-ghost"
           style={{ padding: '6px' }}
           title="Thu gọn thanh bên"
         >
@@ -219,11 +219,11 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {/* Action Row: Upload button + Attach button */}
           <div style={{ padding: '10px 14px', display: 'flex', gap: '8px' }}>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              style={{ display: 'none' }} 
-              accept=".pdf,.docx,.txt,.md"
+            <input
+              type="file"
+              ref={fileInputRef}
+              style={{ display: 'none' }}
+              accept=".pdf,.docx,.pptx,.txt,.md"
               onChange={handleFileChange}
             />
             <button
@@ -251,8 +251,8 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
           {/* Upload Status Card */}
           {uploadProgressData && (
             <div style={{ padding: '0 14px' }}>
-              <UploadProgressBar 
-                data={uploadProgressData} 
+              <UploadProgressBar
+                data={uploadProgressData}
                 onDismiss={() => setUploadProgressData(null)}
               />
             </div>
@@ -273,7 +273,7 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
                 Chọn tài liệu từ kho lưu trữ:
               </div>
               {availableToAttach.map(doc => (
-                <div 
+                <div
                   key={doc.id}
                   onClick={async () => {
                     if (onAttachDoc) {

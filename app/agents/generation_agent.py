@@ -27,6 +27,7 @@ from app.agents.constants import ANSWER_ACCEPT_THRESHOLD
 from app.llm.utils import LLMCallError, acall_llm_text
 from app.retrieval.helpers import format_chunks_for_prompt
 from app.agents.state import GraphState
+from app.retrieval.expansion import make_snippet
 
 logger = logging.getLogger(__name__)
 
@@ -79,26 +80,25 @@ def _extract_cited_indices(answer_text: str) -> set[int]:
     return {int(m) for m in _CITATION_PATTERN.findall(answer_text)}
 
 
+def _citation(i: int, c: dict) -> dict:
+    # `index` = số [n] ĐÚNG như LLM đã trích trong câu trả lời (trước đây UI đánh số lại
+    # theo vị trí trong danh sách đã lọc => [3] trong text hiện thành "[1]" ở chip).
+    return {
+        "index": i,
+        "file": c.get("source_file"),
+        "page": c.get("page"),
+        "section": c.get("section"),
+        "snippet": c.get("snippet") or make_snippet(c.get("text", "")),
+    }
+
+
 def _build_qa_citations(chunks: list[dict], answer_text: str) -> list[dict]:
-    """QA mode: chỉ trả về citation cho chunk THỰC SỰ được LLM trích dẫn
-    trong câu trả lời (tránh liệt kê hết 5 chunk retrieve được dù answer
-    chỉ thật sự dùng 2)."""
     cited = _extract_cited_indices(answer_text)
-    return [
-        {"file": c.get("source_file"), "page": c.get("page"), "section": c.get("section")}
-        for i, c in enumerate(chunks, start=1)
-        if i in cited
-    ]
+    return [_citation(i, c) for i, c in enumerate(chunks, start=1) if i in cited]
 
 
 def _build_teaching_citations(chunks: list[dict]) -> list[dict]:
-    """Teaching mode: liệt kê TOÀN BỘ nguồn đã cung cấp làm context, thay
-    vì chỉ phần được trích dẫn inline — vì bài giảng scaffolding trải rộng
-    qua nhiều ý, việc bắt LLM chèn [1][2] dày đặc sẽ ngắt mạch giảng giải
-    sư phạm. Đánh đổi: citation ít chính xác hơn QA mode, chấp nhận được
-    vì mục tiêu teaching mode là hiểu bài, không phải tra cứu sự kiện."""
-    return [{"file": c.get("source_file"), "page": c.get("page"), "section": c.get("section")} for c in chunks]
-
+    return [_citation(i, c) for i, c in enumerate(chunks, start=1)]
 
 async def run_generation(state: GraphState) -> GraphState:
     intent = state.get("intent", "qa")

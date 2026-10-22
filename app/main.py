@@ -1,19 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import routes_auth, routes_chat, routes_documents, routes_mastery, routes_quiz, routes_spaces
+from app.config import settings
 from app.core.logging_config import setup_logging
-from app.api import routes_chat, routes_documents, routes_quiz, routes_mastery, routes_auth, routes_spaces
 
 setup_logging()
 
-app = FastAPI(title="StudyRAG", version="0.1.0")
+app = FastAPI(title="StudyRAG", version="0.2.0")
 
+# Xác thực bằng header Authorization (không dùng cookie) => không cần allow_credentials.
+# Origin lấy từ CORS_ORIGINS trong .env thay vì "*".
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(routes_auth.router, prefix="/auth", tags=["auth"])

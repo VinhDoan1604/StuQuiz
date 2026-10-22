@@ -13,6 +13,8 @@ class ReflectionResult(TypedDict, total=False):
     answer_grade: float
     answer_faithful: bool
     feedback: str
+    graded: bool    # False = bộ chấm lỗi (fail-open), điểm là None
+    forced: bool    # True = chưa đạt nhưng bị ép chấp nhận do hết lượt thử
 
 
 class GraphState(TypedDict, total=False):

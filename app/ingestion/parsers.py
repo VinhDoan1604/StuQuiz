@@ -29,6 +29,7 @@ from pypdf.errors import PdfReadError
 
 from app.ingestion.ocr import OCR_MIN_CONFIDENCE, OCRError, ocr_page_image
 from app.models.schemas import BlockType, ParsedBlock, ParsedDocument
+from app.ingestion.text_parser import parse_text
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +359,8 @@ def _parse_pptx(raw_bytes: bytes, filename: str) -> ParsedDocument:
         warnings=warnings,
     )
 
-
+def _parse_text(raw_bytes: bytes, filename: str) -> ParsedDocument:
+    return parse_text(raw_bytes, filename, _classify_line)
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -366,6 +368,8 @@ _EXTENSION_MAP = {
     "pdf": _parse_pdf,
     "docx": _parse_docx,
     "pptx": _parse_pptx,
+    "txt": _parse_text,
+    "md": _parse_text,
 }
 
 
