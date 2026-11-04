@@ -1,0 +1,5 @@
+# VÍ DỤ ĐỊNH DẠNG — KHÔNG dùng làm dataset thật. gold_evidence phải là trích NGUYÊN VĂN từ tài liệu của BẠN.
+# Copy file này thành questions.jsonl rồi thay nội dung. Dòng bắt đầu bằng # bị bỏ qua.
+{"id": "q001", "question": "Vì sao Dijkstra cho kết quả sai khi đồ thị có cạnh âm?", "answerable": true, "gold_answer": "Dijkstra giả định khoảng cách đã chốt cho một đỉnh là tối ưu vĩnh viễn; cạnh âm có thể làm giảm khoảng cách sau đó nên giả định sai.", "gold_evidence": ["<dán nguyên văn 1 câu trong tài liệu nêu lý do>"], "source_file": "ten-file.pdf", "tags": ["why", "hand-written"], "reviewed": true}
+{"id": "q002", "question": "So sánh độ phức tạp của Bellman-Ford và Dijkstra.", "answerable": true, "gold_answer": "Bellman-Ford O(V*E), chậm hơn Dijkstra O((V+E)logV) nhưng xử lý được trọng số âm.", "gold_evidence": ["<câu nêu O(V*E)>", "<câu nêu độ phức tạp Dijkstra>"], "source_file": "ten-file.pdf", "tags": ["compare", "multi-evidence"], "reviewed": true}
+{"id": "q101", "question": "Thuật toán A* dùng hàm heuristic nào trong bài toán 8-puzzle?", "answerable": false, "gold_answer": "", "gold_evidence": [], "tags": ["unanswerable", "hand-written"], "reviewed": true}

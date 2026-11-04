@@ -1,0 +1,119 @@
+{
+  "embedding_model": "BAAI/bge-m3",
+  "chunking": {
+    "child_min_tokens": 200,
+    "child_max_tokens": 400,
+    "child_overlap_tokens": 50,
+    "parent_max_tokens": 1500
+  },
+  "documents": [
+    {
+      "filename": "law_nd24_2012_kinh_doanh_vang_vbhn117_2026.md",
+      "doc_id": "ec5ad2ac-b588-5c2c-8378-1f4085006636",
+      "sha256": "768cb04a4a7c94cc2a560bb5688b5afe7defe6a1d24a191a2c28cfda9306c9b7",
+      "num_chunks": 37
+    },
+    {
+      "filename": "notes_co4031_data_warehouse_dss.pdf",
+      "doc_id": "afe66ae8-712f-559d-854e-6da12216a7b8",
+      "sha256": "dab5affd136e1bc792aad55d1a81b324c9a02d5bc419e100b8d3981cfcbfb1ed",
+      "num_chunks": 145
+    },
+    {
+      "filename": "openstax_intro_cs_ch3_data_structures_algorithms.pdf",
+      "doc_id": "423adacf-db3e-5adc-ac7f-a7f00c09f5a0",
+      "sha256": "3bda8769fab921084c8b7fe587e09f5593831336fcb19f623d6a3d3baae547e7",
+      "num_chunks": 87
+    },
+    {
+      "filename": "openstax_intro_cs_ch8_data_management.pdf",
+      "doc_id": "6a489cde-9e45-5d43-84ba-89a2e57a0444",
+      "sha256": "7ad76c68c370b7bef1a39537f1c8b2611e48c230c751621304193f34eddcf8cc",
+      "num_chunks": 177
+    },
+    {
+      "filename": "slides_spm_ch9_monitoring_and_control.pptx",
+      "doc_id": "740f670e-1996-55d6-8dbc-b62e6b84f53f",
+      "sha256": "29794db618254934b670c04a5d5d1430f31a2fcda3068662a13eabdd78d80f98",
+      "num_chunks": 23
+    },
+    {
+      "filename": "voer_lich_su_tu_nhien_viet_nam.md",
+      "doc_id": "a9e1e645-17f7-532a-9af4-c67ebd708971",
+      "sha256": "17e6ec195feb39447c9c5029cdc814ab97bc24bd9d9b0dd543d73093ec73bc42",
+      "num_chunks": 53
+    },
+    {
+      "filename": "wiki_a_star.md",
+      "doc_id": "906b963f-ae0a-5199-95bc-91760e5e87d5",
+      "sha256": "a7a7e3f718c3bff8e7b1ae2df096cebf899aae3739814ed44ce93d6473d66426",
+      "num_chunks": 15
+    },
+    {
+      "filename": "wiki_bellman_ford.md",
+      "doc_id": "dddbe378-1a92-59c0-b4dc-274a6a8155b2",
+      "sha256": "c4538b8c40fbf97ff1bf282d577a0fbd35020eeccefc7ca5a9a1d9b61c9c8c1d",
+      "num_chunks": 9
+    },
+    {
+      "filename": "wiki_bfs.md",
+      "doc_id": "53e0f035-43bb-5338-99cc-fcf266721ee1",
+      "sha256": "f3a2e552d3f9435f6439240c92f820e01d96fa35eaaa950f0f6618eace8d2430",
+      "num_chunks": 8
+    },
+    {
+      "filename": "wiki_binary_search_tree.md",
+      "doc_id": "073055ea-968f-5577-8215-2fadb27b94ce",
+      "sha256": "39fbc4e80e4244c81f17862c6e10fc044c0e3fd97d8e90dd31b1d5b6c3ef2846",
+      "num_chunks": 19
+    },
+    {
+      "filename": "wiki_dfs.md",
+      "doc_id": "c5ce17ac-9ce6-5483-a17b-23c8027388a0",
+      "sha256": "18fae1db2baa83cf1314b3d3589840b906a8072faf7a35c98495df3095aeeabc",
+      "num_chunks": 12
+    },
+    {
+      "filename": "wiki_dijkstra.md",
+      "doc_id": "32d02da3-fa83-59c5-810f-9bb4d92ba1d9",
+      "sha256": "b3f6950f62912a68134d4f2402aad57fd71c05147171ea3077dfd591fe82c241",
+      "num_chunks": 10
+    },
+    {
+      "filename": "wiki_floyd_warshall.md",
+      "doc_id": "6133d760-0b2b-597c-98ad-e75c94000cd2",
+      "sha256": "0190f63d5d0adfff0fed2c8e5d74ddfe193c2bfae6583cced4c270dfaa76e5a8",
+      "num_chunks": 11
+    },
+    {
+      "filename": "wiki_hash_table.md",
+      "doc_id": "df954994-c1ee-5c57-b229-5749d54b47be",
+      "sha256": "7140b13f8612465e29262b532299ee6aa35ed910d5a999f482c377176793bb69",
+      "num_chunks": 9
+    },
+    {
+      "filename": "wiki_kruskal.md",
+      "doc_id": "d38f7615-467e-5121-b58d-4fa8a74dfd1d",
+      "sha256": "e91440be524cd029bc2add009f7c10cd3ea576419958a3897730b8bc6e151dc7",
+      "num_chunks": 12
+    },
+    {
+      "filename": "wiki_minimum_spanning_tree.md",
+      "doc_id": "c69bc3e9-fbfc-5930-846f-f438cc29de4b",
+      "sha256": "dc7e8677c1773bc8a74e441342528e2fbca50f7f003b092c1838cd754e1d7d79",
+      "num_chunks": 15
+    },
+    {
+      "filename": "wiki_prim.md",
+      "doc_id": "9ab96970-f4a9-5f58-a134-72b39227676d",
+      "sha256": "e3ed9dcc2a859179c03a130551c0c500c1ec9717011e16b77895bc548571e3ba",
+      "num_chunks": 5
+    },
+    {
+      "filename": "wiki_topological_sort.md",
+      "doc_id": "6b5cb677-b015-513f-ad99-d72279d2c090",
+      "sha256": "c041b3de9fa61bfef26daa8e4a0a7222cc97bb9208dcacaef028ad9d34862950",
+      "num_chunks": 6
+    }
+  ]
+}
