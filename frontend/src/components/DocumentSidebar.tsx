@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   FileText,
   Upload,
@@ -12,8 +12,10 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import {
+  errorMessage,
   uploadDocument,
   fetchSpaceChatHistory,
+  type ChatSessionItem,
   type DocumentItem,
   type StudySpaceItem
 } from '../services/api';
@@ -29,7 +31,7 @@ interface DocumentSidebarProps {
   activeSpace?: StudySpaceItem | null;
   onAttachDoc?: (docId: string) => Promise<void>;
   onDetachDoc?: (docId: string) => Promise<void>;
-  onSelectChatSession?: (session: any) => void;
+  onSelectChatSession?: (session: ChatSessionItem) => void;
   activeSessionId?: string;
   onNewChat?: () => void;
 }
@@ -55,23 +57,21 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
   const [showAttachPicker, setShowAttachPicker] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [spaceSessions, setSpaceSessions] = useState<any[]>([]);
+  const [spaceSessions, setSpaceSessions] = useState<ChatSessionItem[]>([]);
 
-  const loadSpaceSessions = async () => {
-    if (!activeSpace) return;
+  const spaceId = activeSpace?.id;
+  const loadSpaceSessions = useCallback(async () => {
+    if (!spaceId) return;
     try {
-      const history = await fetchSpaceChatHistory(activeSpace.id);
-      setSpaceSessions(history);
+      setSpaceSessions(await fetchSpaceChatHistory(spaceId));
     } catch (e) {
-      console.warn('Failed to load space sessions:', e);
+      console.warn('Không tải được lịch sử chat:', e);
     }
-  };
+  }, [spaceId]);
 
   useEffect(() => {
-    if (activeSpace) {
-      loadSpaceSessions();
-    }
-  }, [activeSpace, activeSessionId]);
+    loadSpaceSessions();
+  }, [loadSpaceSessions, activeSessionId]);
 
   // Tự động làm mới danh sách khi có tài liệu đang xử lý nền
   useEffect(() => {
@@ -111,11 +111,11 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
       setTimeout(() => {
         setUploadProgressData(curr => (curr && !curr.isUploading ? null : curr));
       }, 4500);
-    } catch (err: any) {
+    } catch (err) {
       setUploadProgressData({
         isUploading: false,
         fileName: file.name,
-        error: err.message || 'Lỗi khi tải tệp lên'
+        error: errorMessage(err, 'Lỗi khi tải tệp lên')
       });
     } finally {
       setIsUploading(false);
@@ -424,12 +424,12 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                {spaceSessions.map((session, sIdx) => {
+                {spaceSessions.map((session) => {
                   const isActive = activeSessionId === session.session_id;
-                  const firstMsg = session.turns?.[0]?.content || 'Đoạn hội thoại';
+                  const firstMsg = session.title || session.turns?.[0]?.content || 'Đoạn hội thoại';
                   return (
                     <div
-                      key={sIdx}
+                      key={session.session_id}
                       onClick={() => onSelectChatSession && onSelectChatSession(session)}
                       style={{
                         padding: '8px 10px',

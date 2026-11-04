@@ -1,63 +1,10 @@
 """
 Test bảo mật: xác thực + cô lập dữ liệu giữa các user.
 Chạy: pytest tests/test_auth_isolation.py -v
-
-Lưu ý: import app.db.session sẽ thử kết nối Postgres (timeout 2s) rồi fallback
-SQLite file; các test dưới đây override get_db sang SQLite in-memory nên không
-đụng tới dữ liệu thật.
 """
-import os
 import uuid
 
-os.environ.setdefault("APP_ENV", "dev")
-os.environ.setdefault("POSTGRES_PORT", "1")  # fail nhanh -> fallback SQLite
-
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-import app.models.db_models as m  # noqa: F401  (đăng ký bảng vào Base.metadata)
-from app.core.security import create_token, hash_password
-from app.db.session import Base, get_db
-from app.main import app
-
-
-@pytest.fixture()
-def client():
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine, autoflush=False)
-
-    def override():
-        db = Session()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override
-    c = TestClient(app)
-    c.Session = Session
-    yield c
-    app.dependency_overrides.clear()
-
-
-def make_user(client, email, verified=True, password="password123"):
-    with client.Session() as db:
-        user = m.User(
-            email=email,
-            full_name=email,
-            password_hash=hash_password(password),
-            is_verified=verified,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-        return str(user.id), {"Authorization": f"Bearer {create_token(str(user.id))}"}
+import app.models.db_models as m
 
 
 # ---------------------------------------------------------------- xác thực
@@ -79,8 +26,8 @@ def test_google_login_cannot_be_spoofed_with_email_only(client):
     assert "token" not in r.json()
 
 
-def test_login_wrong_password(client):
-    make_user(client, "a@x.com")
+def test_login_wrong_password(client, make_user):
+    make_user("a@x.com")
     r = client.post("/auth/login", json={"email": "a@x.com", "password": "wrong-pass"})
     assert r.status_code == 401
 
@@ -111,9 +58,9 @@ def test_short_password_rejected(client):
 
 
 # ------------------------------------------------------------ cô lập dữ liệu
-def test_user_cannot_touch_other_users_space(client):
-    _, ha = make_user(client, "a@x.com")
-    _, hb = make_user(client, "b@x.com")
+def test_user_cannot_touch_other_users_space(client, make_user):
+    _, ha = make_user("a@x.com")
+    _, hb = make_user("b@x.com")
 
     sid = client.post("/spaces", json={"title": "Của A"}, headers=ha).json()["id"]
 
@@ -127,9 +74,9 @@ def test_user_cannot_touch_other_users_space(client):
     assert client.get(f"/spaces/{sid}", headers=ha).status_code == 200
 
 
-def test_cannot_attach_other_users_document(client):
-    a_id, _ = make_user(client, "a@x.com")
-    _, hb = make_user(client, "b@x.com")
+def test_cannot_attach_other_users_document(client, make_user):
+    a_id, _ = make_user("a@x.com")
+    _, hb = make_user("b@x.com")
     with client.Session() as db:
         doc = m.Document(id=str(uuid.uuid4()), owner_id=a_id, filename="a.pdf", status="ready")
         db.add(doc)
@@ -144,9 +91,9 @@ def test_cannot_attach_other_users_document(client):
     assert client.get("/documents", headers=hb).json() == []
 
 
-def test_quiz_rejects_other_users_documents(client):
-    a_id, _ = make_user(client, "a@x.com")
-    _, hb = make_user(client, "b@x.com")
+def test_quiz_rejects_other_users_documents(client, make_user):
+    a_id, _ = make_user("a@x.com")
+    _, hb = make_user("b@x.com")
     with client.Session() as db:
         doc = m.Document(id=str(uuid.uuid4()), owner_id=a_id, filename="a.pdf", status="ready")
         db.add(doc)
@@ -157,9 +104,9 @@ def test_quiz_rejects_other_users_documents(client):
     assert r.status_code == 404
 
 
-def test_cannot_hijack_other_users_chat_session(client):
-    a_id, _ = make_user(client, "a@x.com")
-    _, hb = make_user(client, "b@x.com")
+def test_cannot_hijack_other_users_chat_session(client, make_user):
+    a_id, _ = make_user("a@x.com")
+    _, hb = make_user("b@x.com")
     sess_id = str(uuid.uuid4())
     with client.Session() as db:
         db.add(m.ChatSession(id=sess_id, user_id=a_id))

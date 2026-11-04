@@ -1,11 +1,9 @@
-# STATUS: READY
 """
-Fixed-size chunking (baseline) — dùng để so sánh benchmark với semantic
-chunker (app/chunking/semantic_chunker.py, STUB). Không phải chiến lược
-chính thức của project nhưng cần có để đo lường "semantic chunking tốt
-hơn bao nhiêu %" trong README.
+Fixed-size chunking (baseline) — chỉ dùng để so sánh benchmark với semantic
+chunker (app/chunking/semantic_chunker.py), không dùng trong pipeline ingest.
 """
 import uuid
+
 from app.models.schemas import Chunk, ChunkMetadata
 
 try:

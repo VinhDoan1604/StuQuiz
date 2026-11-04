@@ -1,20 +1,24 @@
 import { useState, useRef, useEffect } from 'react';
-import { 
-  Send, 
-  BookOpen, 
-  Plus, 
-  PanelLeft, 
+import {
+  Send,
+  BookOpen,
+  Plus,
+  PanelLeft,
   Loader2,
   FileText
 } from 'lucide-react';
-import { 
-  streamChatMessage, 
-  type ChatResponse, 
-  type AgentStepEvent, 
+import {
+  fetchChatModels,
+  newSessionId,
+  streamChatMessage,
+  type ChatModelItem,
+  type ChatResponse,
+  type AgentStepEvent,
+  type ChatSessionItem,
   type Citation,
-  type DocumentItem, 
-  type StudySpaceItem, 
-  type UserProfile 
+  type DocumentItem,
+  type ReflectionTrace,
+  type StudySpaceItem,
 } from '../services/api';
 import { ReflectionTimeline } from './ReflectionTimeline';
 import { CitationViewer } from './CitationViewer';
@@ -30,7 +34,6 @@ export interface ChatViewProps {
   activeSpace?: StudySpaceItem | null;
   onAttachDoc?: (docId: string) => Promise<void>;
   onDetachDoc?: (docId: string) => Promise<void>;
-  user?: UserProfile | null;
 }
 
 interface Message {
@@ -38,12 +41,14 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   citations?: Citation[];
-  reflection?: any;
+  reflection?: ReflectionTrace | null;
   liveEvents?: AgentStepEvent[];
 }
 
 // [n] -> link nội bộ #cite-n (bỏ qua [n](...) đã là link markdown)
 const linkifyCitations = (text: string) => text.replace(/\[(\d{1,2})\](?!\()/g, '[[$1]](#cite-$1)');
+
+const MODEL_STORAGE_KEY = 'studyrag.chatModel';
 
 export const ChatView: React.FC<ChatViewProps> = ({
   documents = [],
@@ -53,19 +58,39 @@ export const ChatView: React.FC<ChatViewProps> = ({
   activeSpace,
   onAttachDoc,
   onDetachDoc,
-  user,
 }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [liveEvents, setLiveEvents] = useState<AgentStepEvent[]>([]);
-  const [sessionId, setSessionId] = useState<string>(() => 'session_' + Math.random().toString(36).substring(2, 9));
-  
+  const [sessionId, setSessionId] = useState<string>(newSessionId);
+
   // Citation Viewer Drawer
   const [selectedCitations, setSelectedCitations] = useState<Citation[]>([]);
   const [activeCitationIdx, setActiveCitationIdx] = useState<number | null>(null);
   const [showCitationDrawer, setShowCitationDrawer] = useState(false);
+
+  // Model AI user chọn (danh sách do backend cấu hình; '' = mặc định của server)
+  const [chatModels, setChatModels] = useState<ChatModelItem[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try { return localStorage.getItem(MODEL_STORAGE_KEY) || ''; } catch { return ''; }
+  });
+
+  useEffect(() => {
+    fetchChatModels()
+      .then(({ models }) => {
+        setChatModels(models);
+        // Model đã lưu không còn trong cấu hình => quay về mặc định
+        setSelectedModel(prev => (models.some(m => m.id === prev) ? prev : ''));
+      })
+      .catch(() => setChatModels([]));
+  }, []);
+
+  const handleModelChange = (id: string) => {
+    setSelectedModel(id);
+    try { localStorage.setItem(MODEL_STORAGE_KEY, id); } catch { /* bỏ qua */ }
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -96,19 +121,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const assistantMsgId = 'msg_ast_' + Date.now();
     let currentLiveEvents: AgentStepEvent[] = [];
 
-    const activeDocIds = activeSpace?.document_ids && activeSpace.document_ids.length > 0
-      ? activeSpace.document_ids
-      : documents.map(d => d.id);
-
-    await streamChatMessage(
-      sessionId,
-      textToSend.trim(),
-      (event: AgentStepEvent) => {
+    // Phạm vi tài liệu do server tự lấy theo space_id (đã kiểm tra quyền sở hữu)
+    await streamChatMessage(sessionId, textToSend.trim(), {
+      onStep: (event: AgentStepEvent) => {
         currentLiveEvents = [...currentLiveEvents, event];
         setLiveEvents([...currentLiveEvents]);
       },
-      (doneRes: ChatResponse) => {
+      onDone: (doneRes: ChatResponse) => {
         setIsStreaming(false);
+        if (doneRes.session_id) setSessionId(doneRes.session_id);
         const assistantMsg: Message = {
           id: assistantMsgId,
           role: 'assistant',
@@ -125,7 +146,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           setActiveCitationIdx(0);
         }
       },
-      (err: string) => {
+      onError: (err: string) => {
         setIsStreaming(false);
         const errorMsg: Message = {
           id: assistantMsgId,
@@ -136,10 +157,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         setMessages(prev => [...prev, errorMsg]);
         setLiveEvents([]);
       },
-      activeDocIds,
-      activeSpace?.id,
-      user?.id
-    );
+    }, activeSpace?.id, undefined, selectedModel || undefined);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -149,15 +167,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  const handleSelectChatSession = (session: any) => {
+  const handleSelectChatSession = (session: ChatSessionItem) => {
     setSessionId(session.session_id);
     if (session.turns && session.turns.length > 0) {
-      const restored: Message[] = session.turns.map((t: any) => ({
-        id: t.id || 'msg_' + Math.random(),
+      const restored: Message[] = session.turns.map((t) => ({
+        id: t.id,
         role: t.role,
         content: t.content,
         citations: t.reflection_trace?.citations || [],
-        reflection: t.reflection_trace,
+        reflection: t.role === 'assistant' ? t.reflection_trace : null,
       }));
       setMessages(restored);
     } else {
@@ -167,7 +185,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   const handleNewSession = () => {
-    setSessionId('session_' + Math.random().toString(36).substring(2, 9));
+    setSessionId(newSessionId());
     setMessages([]);
     setLiveEvents([]);
     setSelectedCitations([]);
@@ -183,7 +201,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 56px)', overflow: 'hidden' }}>
       {/* Document & Sessions Sidebar */}
-      <DocumentSidebar 
+      <DocumentSidebar
         isOpen={isSidebarOpen}
         onToggle={() => setIsSidebarOpen(false)}
         documents={documents}
@@ -232,7 +250,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             {selectedCitations.length > 0 && !showCitationDrawer && (
-              <button 
+              <button
                 onClick={() => setShowCitationDrawer(true)}
                 className="btn-secondary"
                 style={{ padding: '4px 10px', fontSize: '12px' }}
@@ -242,7 +260,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </button>
             )}
 
-            <button 
+            <button
               onClick={handleNewSession}
               className="btn-ghost"
               style={{ padding: '4px 10px', fontSize: '12.5px' }}
@@ -286,7 +304,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   {activeSpace ? activeSpace.title : 'Trợ lý học tập StudyRAG'}
                 </h2>
                 <p style={{ fontSize: '14px', color: 'var(--text-secondary)', maxWidth: '520px', margin: '0 auto 24px', lineHeight: '1.6' }}>
-                  {documents.length > 0 
+                  {documents.length > 0
                     ? `Đặt câu hỏi về ${documents.length} tài liệu đã tải lên trong không gian này để được giải thích kèm trích dẫn đối soát.`
                     : 'Không gian này chưa có tài liệu nào. Hãy tải tệp lên ở thanh bên trái để bắt đầu hỏi đáp.'
                   }
@@ -325,20 +343,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             {/* Messages */}
             {messages.map((msg) => (
-              <div 
-                key={msg.id} 
-                style={{ 
-                  display: 'flex', 
+              <div
+                key={msg.id}
+                style={{
+                  display: 'flex',
                   flexDirection: 'column',
                   alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start',
                   width: '100%'
                 }}
               >
                 {/* Role Label */}
-                <div style={{ 
-                  fontSize: '12px', 
-                  fontWeight: 600, 
-                  color: 'var(--text-muted)', 
+                <div style={{
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: 'var(--text-muted)',
                   marginBottom: '4px',
                   paddingLeft: msg.role === 'assistant' ? '2px' : '0',
                   paddingRight: msg.role === 'user' ? '2px' : '0',
@@ -428,10 +446,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 {/* Reflection Timeline */}
                 {(msg.reflection || (msg.liveEvents && msg.liveEvents.length > 0)) && (
                   <div style={{ width: '100%' }}>
-                    <ReflectionTimeline 
-                      trace={msg.reflection} 
-                      liveEvents={msg.liveEvents} 
-                      isStreaming={false} 
+                    <ReflectionTimeline
+                      trace={msg.reflection}
+                      liveEvents={msg.liveEvents}
+                      isStreaming={false}
                     />
                   </div>
                 )}
@@ -457,6 +475,31 @@ export const ChatView: React.FC<ChatViewProps> = ({
           borderTop: '1px solid var(--border-subtle)'
         }}>
           <div style={{ maxWidth: '780px', margin: '0 auto', position: 'relative' }}>
+            {chatModels.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                <label htmlFor="chat-model-select">Model AI:</label>
+                <select
+                  id="chat-model-select"
+                  value={selectedModel}
+                  onChange={(e) => handleModelChange(e.target.value)}
+                  disabled={isStreaming}
+                  style={{
+                    background: 'var(--bg-base)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '3px 6px',
+                    fontSize: '12px',
+                    fontFamily: 'inherit'
+                  }}
+                >
+                  <option value="">Mặc định</option>
+                  {chatModels.map(m => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div style={{
               display: 'flex',
               alignItems: 'flex-end',

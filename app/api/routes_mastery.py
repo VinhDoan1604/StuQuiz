@@ -1,6 +1,6 @@
 """
-routes_mastery v2: chỉ ĐỌC. Endpoint POST /record (client tự báo is_correct) đã bị gỡ —
-mastery chỉ được cập nhật bởi POST /quiz/answer sau khi server tự chấm.
+Mastery: chỉ ĐỌC. Mastery chỉ được cập nhật bởi POST /quiz/answer sau khi
+server tự chấm (không có endpoint nào cho client tự báo đúng/sai).
 """
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session

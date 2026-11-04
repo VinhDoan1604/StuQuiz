@@ -25,8 +25,29 @@ def normalize_text(s: str) -> str:
     return _WS.sub(" ", s).strip()
 
 
+# Chữ cái chỉ có trong tiếng Việt (có dấu / đ). Văn bản tiếng Việt thường có ~8-15% ký tự
+# loại này; tiếng Anh ~0% (kể cả khi chen vài tên riêng tiếng Việt).
+_VI_LETTERS = set("ăâđêôơưàảãáạằẳẵắặầẩẫấậèẻẽéẹềểễếệìỉĩíịòỏõóọồổỗốộờởỡớợùủũúụừửữứựỳỷỹýỵ")
+_VI_RATIO_THRESHOLD = 0.02
+_MIN_LETTERS_FOR_LANG = 20
+
+
+def detect_lang(text: str) -> Optional[str]:
+    """'vi' | 'en' | None (quá ngắn để kết luận). Heuristic thuần, không gọi model."""
+    letters = [ch for ch in unicodedata.normalize("NFC", text or "").lower() if ch.isalpha()]
+    if len(letters) < _MIN_LETTERS_FOR_LANG:
+        return None
+    ratio = sum(ch in _VI_LETTERS for ch in letters) / len(letters)
+    return "vi" if ratio >= _VI_RATIO_THRESHOLD else "en"
+
+
 def _trigrams(tokens: list[str]) -> set[tuple[str, ...]]:
     return {tuple(tokens[i : i + 3]) for i in range(len(tokens) - 2)}
+
+
+def split_alternatives(evidence: str) -> list[str]:
+    """'A || B' -> ['A', 'B'] (phương án thay thế cho cùng một bằng chứng)."""
+    return [a for a in (s.strip() for s in (evidence or "").split("||")) if a]
 
 
 def evidence_match(
@@ -42,7 +63,12 @@ def evidence_match(
     - >= min_containment số trigram từ của bằng chứng có mặt trong chunk
       (chịu được xuống dòng giữa câu / lỗi gạch nối của PDF).
     Bằng chứng ngắn (< 5 từ) chỉ chấp nhận khớp chuỗi con.
+    - "A || B": các phương án thay thế cho CÙNG một ý (vd tài liệu nêu ý đó ở 2 nơi);
+      khớp một phương án là đủ.
     """
+    alts = split_alternatives(evidence)
+    if len(alts) > 1:
+        return any(evidence_match(chunk_text, a, min_containment, normalized=normalized) for a in alts)
     ch = chunk_text if normalized else normalize_text(chunk_text)
     ev = normalize_text(evidence)
     if not ev or not ch:

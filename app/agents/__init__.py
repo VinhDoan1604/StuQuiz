@@ -9,8 +9,8 @@ Multi-Agent layer cho StudyRAG:
 - Quiz & Summary Agent (sinh trắc nghiệm & tóm tắt)
 - State & Constants
 """
+from app.agents.constants import ANSWER_ACCEPT_THRESHOLD, CONTEXT_SUFFICIENT_THRESHOLD
 from app.agents.state import GraphState, ReflectionResult
-from app.agents.constants import CONTEXT_SUFFICIENT_THRESHOLD, ANSWER_ACCEPT_THRESHOLD
 
 __all__ = [
     "GraphState",

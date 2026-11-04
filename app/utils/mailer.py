@@ -1,5 +1,4 @@
 import logging
-import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -16,23 +15,19 @@ def send_verification_email(to_email: str, code: str) -> bool:
     Quy tắc bảo mật: mã OTP chỉ được ghi ra log khi APP_ENV=dev VÀ chưa cấu
     hình SMTP (để tiện thử nghiệm). Ở mọi môi trường khác tuyệt đối không log.
     """
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_password = os.getenv("SMTP_PASSWORD")
-
-    if not (smtp_host and smtp_user and smtp_password):
-        if settings.app_env == "dev":
+    if not settings.smtp_configured:
+        if settings.is_dev:
             logger.info("[DEV] OTP cho %s = %s (SMTP chưa cấu hình)", to_email, code)
         else:
             logger.error("SMTP chưa được cấu hình — không thể gửi OTP tới %s.", to_email)
         return False
 
     ttl = settings.otp_ttl_minutes
+    sender = settings.smtp_from or settings.smtp_user
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = "Mã xác thực StudyRAG của bạn"
-        msg["From"] = f"StudyRAG <{smtp_user}>"
+        msg["From"] = f"StudyRAG <{sender}>"
         msg["To"] = to_email
 
         html = f"""
@@ -47,12 +42,13 @@ def send_verification_email(to_email: str, code: str) -> bool:
           Không chia sẻ mã này cho bất kỳ ai.</p>
         </div>
         """
+        msg.attach(MIMEText(f"Mã xác thực StudyRAG: {code} (hiệu lực {ttl} phút).", "plain"))
         msg.attach(MIMEText(html, "html"))
 
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
             server.starttls()
-            server.login(smtp_user, smtp_password)
-            server.sendmail(smtp_user, to_email, msg.as_string())
+            server.login(settings.smtp_user, settings.smtp_password)
+            server.sendmail(sender, to_email, msg.as_string())
         logger.info("Đã gửi email OTP tới %s.", to_email)
         return True
     except Exception as exc:

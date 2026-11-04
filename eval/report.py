@@ -12,16 +12,26 @@ import math
 from typing import Any, Iterable, Optional
 
 from eval.dataset import EvalItem
-from eval.metrics import bootstrap_ci, paired_bootstrap_diff, percentile
+from eval.metrics import bootstrap_ci, detect_lang, paired_bootstrap_diff, percentile
 
 RETRIEVAL_METRICS = ["hit@1", "hit@3", "hit@5", "recall@5", "mrr"]
+CONTEXT_METRICS = ["hit@5", "recall@5"]  # tính trên context thật gửi LLM (sau mở rộng parent)
 # (khoá, nhãn, "cao hơn là tốt hơn?")
 QUALITY_METRICS = [
     ("faithfulness", "Faithfulness ↑", True),
     ("correctness", "Correctness ↑", True),
     ("false_abstain", "Từ chối nhầm ↓", False),
     ("abstain_correct", "Từ chối đúng (câu không có đáp án) ↑", True),
+    ("lang_match_en", "Trả lời đúng ngôn ngữ (câu hỏi tiếng Anh) ↑", True),
 ]
+
+
+def question_lang(item: EvalItem) -> Optional[str]:
+    """Ngôn ngữ câu hỏi: ưu tiên tag lang-vi / lang-en của dataset, không có thì tự nhận diện."""
+    for tag in item.tags:
+        if tag in ("lang-vi", "lang-en"):
+            return tag[-2:]
+    return detect_lang(item.question)
 
 
 def _fmt(vals: Iterable[Optional[float]], n_boot: int, digits: int = 3) -> str:
@@ -49,12 +59,18 @@ def collect(records: dict[str, dict[str, dict]], items: dict[str, EvalItem]) -> 
             if item.answerable:
                 for m in RETRIEVAL_METRICS:
                     put(m, qid, (rec.get("retrieval") or {}).get(m))
+                for m in CONTEXT_METRICS:
+                    put(f"ctx_{m}", qid, (rec.get("context_retrieval") or {}).get(m))
                 put("faithfulness", qid, rec.get("faithfulness"))
                 put("correctness", qid, rec.get("correctness"))
                 if rec.get("abstained") is not None:
                     put("false_abstain", qid, 1.0 if rec["abstained"] else 0.0)
             elif rec.get("abstained") is not None:
                 put("abstain_correct", qid, 1.0 if rec["abstained"] else 0.0)
+
+            if question_lang(item) == "en" and rec.get("answer"):
+                ans_lang = detect_lang(rec["answer"])
+                put("lang_match_en", qid, None if ans_lang is None else (1.0 if ans_lang == "en" else 0.0))
 
             put("latency_s", qid, rec.get("latency_s"))
             put("llm_calls", qid, rec.get("llm_calls"))
@@ -95,6 +111,20 @@ def build_report(
     L.append("|---|" + "---|" * len(RETRIEVAL_METRICS))
     for c in configs:
         L.append(f"| `{c}` | " + " | ".join(_fmt(values[c].get(m, {}).values(), n_boot) for m in RETRIEVAL_METRICS) + " |")
+    L.append(
+        "\n*Chấm trên chunk con (200-400 token) trước khi mở rộng parent, để mọi cấu hình cùng đơn vị so sánh.*"
+    )
+
+    if any(values[c].get("ctx_hit@5") for c in configs):
+        L.append("\n### 1b. Bằng chứng có trong context gửi LLM\n")
+        L.append("| Cấu hình | " + " | ".join(CONTEXT_METRICS) + " |")
+        L.append("|---|" + "---|" * len(CONTEXT_METRICS))
+        for c in configs:
+            L.append(f"| `{c}` | " + " | ".join(_fmt(values[c].get(f"ctx_{m}", {}).values(), n_boot) for m in CONTEXT_METRICS) + " |")
+        L.append(
+            "\n*Với `parent`/`crag`/`full`, context là đoạn cha (tới 1500 token) nên dễ chứa bằng chứng hơn — "
+            "không dùng bảng này để so retrieval giữa các cấu hình.*"
+        )
 
     # --- Generation
     summary_quality: dict[str, Any] = {}
@@ -151,6 +181,13 @@ def build_report(
     ]
     L.append(f"\n## 5. Phân tích lỗi (`{last}`)\n")
     L.append(f"- Retrieval trượt hoàn toàn (hit@5=0): **{len(misses)}** câu: {', '.join(sorted(misses)[:15]) or '—'}")
+    by_lang: dict[str, list[float]] = {}
+    for q, val in values[last].get("hit@5", {}).items():
+        if q in items_by_id:
+            by_lang.setdefault(question_lang(items_by_id[q]) or "?", []).append(val)
+    if len(by_lang) > 1:
+        cells = ", ".join(f"{lang}: {_fmt(vals, n_boot)}" for lang, vals in sorted(by_lang.items()))
+        L.append(f"- hit@5 theo ngôn ngữ câu hỏi: {cells}")
     if not retrieval_only:
         bad = [q for q, val in values[last].get("correctness", {}).items() if val == 0.0]
         L.append(f"- Trả lời sai hẳn (correctness=0): **{len(bad)}** câu: {', '.join(sorted(bad)[:15]) or '—'}")

@@ -25,6 +25,7 @@ dist/
 postgres_data/
 qdrant_storage/
 data/
+!eval/data/
 uploads/
 
 # Logs & Temp
@@ -43,3 +44,9 @@ docs/
 # Evaluation
 eval/results/
 eval/corpus/
+eval/raw_corpus/
+# Tooling
+.ruff_cache/
+ci.db
+*.db.bak*
+backups/

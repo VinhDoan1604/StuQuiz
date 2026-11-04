@@ -1,37 +1,73 @@
-# STATUS: READY
-
+# Toàn bộ stack: docker compose up -d --build  ->  http://localhost:8080
+# Chỉ hạ tầng (chạy backend/frontend ngoài Docker khi dev):
+#   docker compose up -d postgres qdrant
 services:
   postgres:
     image: postgres:16
-    env_file: .env
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-studyrag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Đặt POSTGRES_PASSWORD trong .env}
+      POSTGRES_DB: ${POSTGRES_DB:-studyrag}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"   # cổng host cho dev ngoài Docker (POSTGRES_PORT=5433)
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   qdrant:
-    image: qdrant/qdrant:v1.11.5
+    # Nâng phiên bản server từng minor một (yêu cầu của Qdrant khi đã có dữ liệu)
+    image: qdrant/qdrant:v1.19.2
+    restart: unless-stopped
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrant_storage:/qdrant/storage
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]   # chỉ dùng cho bộ đếm rate limit
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     build: .
+    restart: unless-stopped
     env_file: .env
     environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - QDRANT_URL=http://qdrant:6333
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+      LOG_FORMAT: json
     depends_on:
-      - postgres
-      - qdrant
-    ports:
-      - "8000:8000"
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
     volumes:
-      - .:/app
+      - model_cache:/models/hf   # cache weights BGE-M3/reranker giữa các lần khởi động
+    # Không publish cổng: chỉ truy cập qua nginx (service web)
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
 
 volumes:
   postgres_data:
   qdrant_storage:
+  model_cache:

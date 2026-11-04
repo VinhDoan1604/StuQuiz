@@ -1,8 +1,13 @@
-"""routes_documents v2 (thay thế bản Part 1): hỗ trợ txt/md, lưu parent chunk, dọn parent khi xoá."""
+"""
+Upload / liệt kê / xoá tài liệu.
+
+Pipeline lập chỉ mục (chạy nền): parse -> clean -> chunk (parent + child) ->
+lưu parent (DB) -> embed child (BGE-M3) -> upsert Qdrant. Trạng thái tài liệu:
+processing -> ready | failed.
+"""
 import asyncio
 import logging
 import os
-import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -17,11 +22,33 @@ from app.indexing.qdrant_store import delete_document_vectors, upsert_chunks
 from app.ingestion.cleaning import clean_document
 from app.ingestion.parsers import ParsingError, UnsupportedFileTypeError, parse_document
 from app.models.db_models import Document, ParentChunk, StudySpace, User
+from app.utils.ids import new_id
 
 router = APIRouter()
 logger = logging.getLogger("app.api.documents")
 
 ALLOWED_EXTENSIONS = {"pdf", "docx", "pptx", "txt", "md"}
+_INTERRUPTED_MESSAGE = "Quá trình lập chỉ mục bị gián đoạn (máy chủ khởi động lại). Vui lòng tải lại tệp."
+
+
+def fail_stale_processing_documents() -> int:
+    """
+    Gọi lúc khởi động: tác vụ nền chạy trong tiến trình, nên tài liệu còn ở
+    'processing' khi server khởi động lại sẽ không bao giờ hoàn tất. Đánh dấu
+    'failed' để UI không quay vòng chờ mãi. Trả về số tài liệu bị ảnh hưởng.
+    """
+    try:
+        with SessionLocal() as db:
+            count = (
+                db.query(Document)
+                .filter(Document.status == "processing")
+                .update({"status": "failed", "error_message": _INTERRUPTED_MESSAGE}, synchronize_session=False)
+            )
+            db.commit()
+            return count
+    except Exception as exc:  # bảng chưa tồn tại (chưa chạy migration) / DB lỗi
+        logger.warning("Không kiểm tra được tài liệu kẹt 'processing': %s", exc)
+        return 0
 
 
 def _process_document_indexing(doc_id: str, owner_id: str, parsed, filename: str):
@@ -68,7 +95,7 @@ def _process_document_indexing(doc_id: str, owner_id: str, parsed, filename: str
             doc = db.query(Document).filter(Document.id == doc_id).first()
             if doc:
                 doc.status = "failed"
-                doc.error_message = str(exc)[:500]
+                doc.error_message = "Không thể lập chỉ mục tài liệu này. Vui lòng thử lại hoặc kiểm tra định dạng tệp."
                 db.commit()
 
 
@@ -106,7 +133,7 @@ async def upload_document(
     if not parsed.blocks:
         raise HTTPException(status_code=422, detail="Không trích xuất được nội dung nào từ tệp này.")
 
-    doc_id = str(uuid.uuid4())
+    doc_id = new_id()
     doc = Document(
         id=doc_id, filename=filename, file_type=parsed.file_type,
         num_chunks=0, status="processing", owner_id=user.id,

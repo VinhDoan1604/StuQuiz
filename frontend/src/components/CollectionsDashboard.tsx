@@ -1,32 +1,30 @@
 import React, { useState } from 'react';
-import { 
-  Plus, 
-  Folder, 
-  Trash2, 
-  Pencil, 
-  Search, 
-  FileText, 
+import {
+  Plus,
+  Folder,
+  Trash2,
+  Pencil,
+  Search,
+  FileText,
   ArrowRight,
   X,
   BookOpen
 } from 'lucide-react';
-import { createSpace, updateSpace, deleteSpace, type StudySpaceItem, type UserProfile } from '../services/api';
+import { createSpace, updateSpace, deleteSpace, errorMessage, type StudySpaceItem } from '../services/api';
 
 interface CollectionsDashboardProps {
   spaces: StudySpaceItem[];
   onSelectSpace: (space: StudySpaceItem) => void;
   onRefreshSpaces: () => void;
-  user: UserProfile | null;
 }
 
 export const CollectionsDashboard: React.FC<CollectionsDashboardProps> = ({
   spaces,
   onSelectSpace,
   onRefreshSpaces,
-  user,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  
+
   // Modal Tạo không gian mới
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -39,7 +37,7 @@ export const CollectionsDashboard: React.FC<CollectionsDashboardProps> = ({
   const [editDesc, setEditDesc] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
 
-  const filteredSpaces = spaces.filter(sp => 
+  const filteredSpaces = spaces.filter(sp =>
     sp.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (sp.description && sp.description.toLowerCase().includes(searchTerm.toLowerCase()))
   );
@@ -50,14 +48,14 @@ export const CollectionsDashboard: React.FC<CollectionsDashboardProps> = ({
 
     setIsSubmitting(true);
     try {
-      const created = await createSpace(newTitle.trim(), newDesc.trim(), user?.id);
+      const created = await createSpace(newTitle.trim(), newDesc.trim());
       onRefreshSpaces();
       setIsCreateModalOpen(false);
       setNewTitle('');
       setNewDesc('');
       onSelectSpace(created);
     } catch (err) {
-      console.error('Lỗi khi tạo không gian:', err);
+      alert(errorMessage(err, 'Không thể tạo không gian học tập'));
     } finally {
       setIsSubmitting(false);
     }
@@ -83,7 +81,7 @@ export const CollectionsDashboard: React.FC<CollectionsDashboardProps> = ({
       onRefreshSpaces();
       setEditingSpace(null);
     } catch (err) {
-      console.error('Lỗi khi cập nhật:', err);
+      alert(errorMessage(err, 'Không thể cập nhật không gian học tập'));
     } finally {
       setIsUpdating(false);
     }
@@ -98,7 +96,7 @@ export const CollectionsDashboard: React.FC<CollectionsDashboardProps> = ({
       await deleteSpace(spaceId);
       onRefreshSpaces();
     } catch (err) {
-      console.error('Lỗi khi xóa:', err);
+      alert(errorMessage(err, 'Không thể xóa không gian học tập'));
     }
   };
 
@@ -141,15 +139,15 @@ export const CollectionsDashboard: React.FC<CollectionsDashboardProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           {/* Search Box */}
           <div style={{ position: 'relative', width: '240px' }}>
-            <Search 
-              size={15} 
-              style={{ 
-                position: 'absolute', 
-                left: '12px', 
-                top: '50%', 
-                transform: 'translateY(-50%)', 
-                color: 'var(--text-muted)' 
-              }} 
+            <Search
+              size={15}
+              style={{
+                position: 'absolute',
+                left: '12px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: 'var(--text-muted)'
+              }}
             />
             <input
               type="text"
@@ -180,10 +178,10 @@ export const CollectionsDashboard: React.FC<CollectionsDashboardProps> = ({
 
       {/* Grid of Study Spaces */}
       {filteredSpaces.length === 0 ? (
-        <div 
-          className="surface-card" 
-          style={{ 
-            padding: '48px 24px', 
+        <div
+          className="surface-card"
+          style={{
+            padding: '48px 24px',
             textAlign: 'center',
             maxWidth: '520px',
             margin: '40px auto'
@@ -207,7 +205,7 @@ export const CollectionsDashboard: React.FC<CollectionsDashboardProps> = ({
             {searchTerm ? 'Không tìm thấy không gian phù hợp' : 'Chưa có không gian học tập nào'}
           </h3>
           <p style={{ fontSize: '13.5px', color: 'var(--text-muted)', marginBottom: '20px', lineHeight: '1.5' }}>
-            {searchTerm 
+            {searchTerm
               ? 'Thử tìm với từ khóa khác hoặc xóa bộ lọc tìm kiếm.'
               : 'Hãy tạo không gian học tập đầu tiên để tải lên tài liệu giáo trình và bắt đầu nghiên cứu.'}
           </p>

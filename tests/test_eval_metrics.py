@@ -6,6 +6,7 @@ import pytest
 from eval.dataset import DatasetError, load_dataset
 from eval.metrics import (
     bootstrap_ci,
+    detect_lang,
     evidence_match,
     normalize_text,
     paired_bootstrap_diff,
@@ -139,3 +140,33 @@ def test_dataset_rejects_duplicate_ids(tmp_path):
     o = {"id": "a", "question": "Q?", "answerable": False}
     with pytest.raises(DatasetError):
         load_dataset(_write(tmp_path, o, o))
+
+
+def test_detect_lang_vietnamese_english_and_too_short():
+    assert detect_lang("Thuật toán Dijkstra tìm đường đi ngắn nhất từ một đỉnh nguồn [1].") == "vi"
+    assert detect_lang("### 🎯 Trả lời trực tiếp\n- **Binary heap** là cấu trúc **priority queue** phổ biến nhất") == "vi"
+    assert detect_lang("A binary heap is the most common implementation of a priority queue [1].") == "en"
+    # tiếng Anh có chen tên riêng tiếng Việt vẫn là tiếng Anh
+    assert detect_lang("The decree applies to gold trading in Việt Nam and requires non-cash payment.") == "en"
+    assert detect_lang("OK") is None
+
+
+def test_report_measures_answer_language_only_for_english_questions():
+    from eval.dataset import EvalItem
+    from eval.report import collect
+
+    items = {
+        "e1": EvalItem(id="e1", question="What is a binary heap?", answerable=True, gold_answer="x",
+                       gold_evidence=("y",), tags=("lang-en",)),
+        "e2": EvalItem(id="e2", question="How does Raft elect a leader?", answerable=False, tags=("lang-en",)),
+        "v1": EvalItem(id="v1", question="Binary heap là gì?", answerable=True, gold_answer="x",
+                       gold_evidence=("y",), tags=("lang-vi",)),
+    }
+    recs = {"full": {
+        "e1": {"answer": "Binary heap là cấu trúc dữ liệu cây nhị phân dùng cho hàng đợi ưu tiên."},
+        "e2": {"answer": "The documents do not cover the Raft consensus algorithm at all."},
+        "v1": {"answer": "Binary heap là cấu trúc dữ liệu cây nhị phân dùng cho hàng đợi ưu tiên."},
+    }}
+    got = collect(recs, items)["full"]["lang_match_en"]
+    assert got == {"e1": 0.0, "e2": 1.0}          # câu tiếng Việt không bị tính
+

@@ -16,3 +16,8 @@ CONTEXT_SUFFICIENT_THRESHOLD = 0.6
 # hallucination) là tiêu chí quan trọng nhất của Self-RAG — thà chấp nhận
 # context hơi thiếu (0.6) còn hơn chấp nhận câu trả lời bịa đặt (cần 0.7+).
 ANSWER_ACCEPT_THRESHOLD = 0.7
+
+# Số chunk giữ lại sau rerank, theo intent.
+HYBRID_TOP_K = 20          # số ứng viên lấy từ hybrid search trước khi rerank
+FINAL_TOP_K_QA = 5         # qa / teaching
+FINAL_TOP_K_BROAD = 15     # quiz / summary khi kích hoạt từ chat

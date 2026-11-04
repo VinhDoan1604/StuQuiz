@@ -16,38 +16,34 @@ Quiz & Summary Agent — 2 chức năng "structured content generation":
    thoại hiện tại (không phải toàn bộ tài liệu — xem ghi chú tương tự
    trong app/agents/retrieval_agent.py).
 
---------------------------------------------------------------------------
-SỬA SIGNATURE SO VỚI STUB GỐC — CẦN THIẾT, KHÔNG PHẢI TÙY CHỌN:
-Stub gốc: `generate_quiz(document_ids, num_questions, prioritize_weak_topics)`
-— THIẾU `db` và `user_id`. Không có 2 tham số này thì KHÔNG THỂ:
-  - gọi get_weak_topics(db, user_id, ...) để ưu tiên topic yếu (chính yêu
-    cầu của tham số `prioritize_weak_topics`!),
-  - query QuizAttempt cũ theo user để tránh trùng lặp câu hỏi (yêu cầu rõ
-    trong đề bài).
-Đã thêm `db: Session` và `user_id: str` làm 2 tham số ĐẦU TIÊN, bắt buộc.
---------------------------------------------------------------------------
+generate_quiz() cần `db` + `user_id` để ưu tiên topic yếu (get_weak_topics)
+và tránh lặp lại câu hỏi user đã gặp (QuizAttempt cũ).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import uuid
 from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.agents.constants import FINAL_TOP_K_BROAD
+from app.agents.quiz_topics import build_section_topics, prioritize_topics
+from app.agents.state import GraphState
 from app.llm.utils import LLMCallError, acall_llm_text, acall_structured
+from app.memory.mastery_tracker import WEAK_SCORE_THRESHOLD
+from app.models.db_models import Document, MasteryRecord, ParentChunk, QuizAttempt
+from app.models.schemas import QuizQuestion, QuizQuestionOut
+from app.retrieval.expansion import make_snippet
 from app.retrieval.helpers import (
     aget_all_chunks_for_documents,
     format_chunks_for_prompt,
     normalize_chunk,
     retrieve_top_k,
 )
-from app.agents.state import GraphState
-from app.memory.mastery_tracker import get_weak_topics
-from app.models.db_models import Document, QuizAttempt
-from app.agents.retrieval_agent import FINAL_TOP_K_BROAD      # sửa NameError khi tóm tắt từ chat
-from app.models.schemas import QuizQuestion, QuizQuestionOut
+from app.utils.ids import new_id
+from app.utils.time import utcnow
 from app.utils.tokens import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -56,6 +52,8 @@ DEFAULT_CONTEXT_TOP_K = 6
 EXISTING_QUESTIONS_LIMIT = 30     # giới hạn số câu cũ đưa vào prompt chống trùng, tránh prompt phình to
 MAP_BATCH_TOKEN_LIMIT = 3000      # mỗi batch trong MAP phase của map-reduce tóm tắt
 SINGLE_CALL_TOKEN_LIMIT = 6000    # dưới ngưỡng này -> tóm tắt 1 lần, không cần map-reduce
+TOPIC_CONTEXT_TOKEN_LIMIT = 2500  # context tối đa của 1 mục khi ra đề
+QUIZ_LLM_CONCURRENCY = 4          # số mục sinh đề song song
 
 _DIFFICULTY_ORDER = {"easy": 0, "medium": 1, "hard": 2}
 
@@ -212,6 +210,54 @@ async def _summarize_chunks(chunks: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 # Public API #1: generate_quiz (REST-facing, tự retrieve theo document_ids)
 # ---------------------------------------------------------------------------
+def _load_section_sources(db: Session, document_ids: list[str]) -> list[dict[str, Any]]:
+    """Nội dung theo mục của các tài liệu: parent chunk (DB) — đủ cả section, không cần vector."""
+    rows = (
+        db.query(ParentChunk)
+        .filter(ParentChunk.doc_id.in_(document_ids))
+        .order_by(ParentChunk.doc_id, ParentChunk.page, ParentChunk.section)
+        .all()
+    )
+    return [{"doc_id": r.doc_id, "section": r.section, "text": r.text, "page": r.page} for r in rows]
+
+
+async def _load_section_sources_from_index(document_ids: list[str]) -> list[dict[str, Any]]:
+    """Dự phòng khi tài liệu không có parent chunk: dùng child chunk trong Qdrant."""
+    try:
+        raw = await aget_all_chunks_for_documents(document_ids)
+    except Exception as exc:
+        logger.warning("generate_quiz: không lấy được chunk từ Qdrant (%s).", exc)
+        return []
+    return [
+        {"doc_id": c.get("doc_id"), "section": c.get("section"), "text": c.get("text", ""), "page": c.get("page")}
+        for c in raw
+    ]
+
+
+def _plan_topics(
+    db: Session, user_id: str, document_ids: list[str], sources: list[dict[str, Any]],
+    num_questions: int, prioritize_weak_topics: bool,
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Chọn tối đa `num_questions` mục để ra đề, kèm nội dung của từng mục."""
+    docs = db.query(Document).filter(Document.id.in_(document_ids)).all()
+    doc_names = {str(d.id): d.filename for d in docs}
+    topics = build_section_topics(sources, doc_names)
+    if not topics:
+        return []
+    if prioritize_weak_topics:
+        records = (
+            db.query(MasteryRecord)
+            .filter(MasteryRecord.user_id == user_id, MasteryRecord.topic.in_([t.label for t in topics]))
+            .all()
+        )
+        topics = prioritize_topics(topics, {r.topic: r for r in records}, utcnow(), WEAK_SCORE_THRESHOLD)
+    chosen = topics[:num_questions]
+    return [
+        (t.label, _pack_chunks_by_token_budget(t.chunks, TOPIC_CONTEXT_TOKEN_LIMIT)[0])
+        for t in chosen
+    ]
+
+
 async def generate_quiz(
     db: Session,
     user_id: str,
@@ -222,49 +268,59 @@ async def generate_quiz(
     space_id: str | None = None,
 ) -> list[QuizQuestionOut]:
     """
-    Sinh tối đa `num_questions` (<=20) câu trắc nghiệm.
-    - topic_prompt: tập trung vào chủ đề do người dùng yêu cầu.
-    - prioritize_weak_topics (và không có topic_prompt): ưu tiên chủ đề yếu / quá hạn ôn tập.
-    - Mỗi câu trả về gắn với 1 QuizAttempt (attempt_id) để server tự chấm ở /quiz/answer.
+    Sinh tối đa `num_questions` (<=20) câu trắc nghiệm, mỗi câu gắn với 1 QuizAttempt
+    (attempt_id) để server tự chấm ở /quiz/answer.
+
+    - topic_prompt: tập trung vào chủ đề người dùng gõ (context lấy bằng retrieval).
+    - Không có topic_prompt: chủ đề = các MỤC của tài liệu (app/agents/quiz_topics.py),
+      context = đúng nội dung mục đó. prioritize_weak_topics => ưu tiên mục quá hạn ôn,
+      rồi mục chưa học, rồi mục còn yếu (chỉ xét trong các tài liệu đang chọn).
     """
     num_questions = max(1, min(int(num_questions or 5), 20))
 
-    topic_plan: list[str] = []
+    plan: list[tuple[str, list[dict[str, Any]]]] = []
     if topic_prompt and topic_prompt.strip():
-        topic_plan = [topic_prompt.strip()]
-    elif prioritize_weak_topics:
-        topic_plan = [t.topic for t in get_weak_topics(db, user_id, limit=min(num_questions, 8))]
+        topic = topic_prompt.strip()
+        hits = await retrieve_top_k(topic, top_k=max(DEFAULT_CONTEXT_TOP_K, num_questions * 2), document_ids=document_ids)
+        plan = [(topic, [normalize_chunk(h) for h in hits])]
+    elif document_ids:
+        sources = _load_section_sources(db, document_ids) or await _load_section_sources_from_index(document_ids)
+        plan = _plan_topics(db, user_id, document_ids, sources, num_questions, prioritize_weak_topics)
 
-    if not topic_plan:
-        docs = db.query(Document).filter(Document.id.in_(document_ids)).all() if document_ids else []
-        topic_plan = sorted({d.subject for d in docs if d.subject}) or ["Tổng hợp kiến thức"]
+    if not plan:
+        logger.warning("generate_quiz(user=%s): không có nội dung để ra đề.", user_id)
+        return []
 
-    n_topics = len(topic_plan)
+    n_topics = len(plan)
     base, remainder = divmod(num_questions, n_topics)
-    counts = [base + (1 if i < remainder else 0) for i in range(n_topics)]  # topic cần chú ý nhất ra nhiều câu nhất
+    counts = [base + (1 if i < remainder else 0) for i in range(n_topics)]  # mục ưu tiên nhất ra nhiều câu nhất
 
-    all_questions: list[QuizQuestion] = []
-    for topic, n in zip(topic_plan, counts):
-        if n <= 0:
-            continue
-        hits = await retrieve_top_k(
-            topic, top_k=max(DEFAULT_CONTEXT_TOP_K, n * 2), document_ids=document_ids or None
-        )
-        chunks = [normalize_chunk(h) for h in hits]
+    # Câu cũ theo từng chủ đề (truy vấn DB tuần tự — Session không dùng chung giữa các coroutine)
+    jobs = []
+    for (topic, chunks), n in zip(plan, counts):
         existing = [
             row[0]
             for row in db.query(QuizAttempt.question)
             .filter(QuizAttempt.user_id == user_id, QuizAttempt.topic == topic)
             .all()
         ]
-        all_questions.extend(await _generate_quiz_questions(chunks, topic, n, existing))
+        jobs.append((chunks, topic, n, existing))
+
+    semaphore = asyncio.Semaphore(QUIZ_LLM_CONCURRENCY)
+
+    async def _run(job):
+        async with semaphore:
+            return await _generate_quiz_questions(*job)
+
+    all_questions: list[QuizQuestion] = [q for batch in await asyncio.gather(*(_run(j) for j in jobs)) for q in batch]
+    topic_plan = [t for t, _ in plan]
 
     selected = _sort_by_difficulty(all_questions)[:num_questions]
 
     outputs: list[QuizQuestionOut] = []
     for q in selected:
         attempt = QuizAttempt(
-            id=str(uuid.uuid4()),
+            id=new_id(),
             user_id=user_id,
             space_id=space_id,
             topic=q.topic,
@@ -353,7 +409,6 @@ async def run_quiz_summary(state: GraphState) -> GraphState:
     if intent == "summary":
         if not chunks and state.get("document_ids"):
             try:
-                from app.retrieval.helpers import aget_all_chunks_for_documents
                 raw_fallback = await aget_all_chunks_for_documents(state["document_ids"])
                 chunks = [normalize_chunk(c) for c in raw_fallback[:FINAL_TOP_K_BROAD]]
             except Exception as exc:
@@ -361,7 +416,14 @@ async def run_quiz_summary(state: GraphState) -> GraphState:
 
         summary = await _summarize_chunks(chunks)
         citations = [
-            {"file": c.get("source_file"), "page": c.get("page"), "section": c.get("section")} for c in chunks
+            {
+                "index": i,
+                "file": c.get("source_file"),
+                "page": c.get("page"),
+                "section": c.get("section"),
+                "snippet": c.get("snippet") or make_snippet(c.get("text", "")),
+            }
+            for i, c in enumerate(chunks, start=1)
         ]
         return {**state, "final_answer": summary, "citations": citations}
 

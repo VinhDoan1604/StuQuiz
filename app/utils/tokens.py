@@ -2,12 +2,9 @@
 app/utils/tokens.py
 
 Đếm token dùng chung cho toàn bộ project (context window budget, chunking,
-prompt budgeting...). Tách riêng module này để tránh lặp lại logic
-load-tiktoken-với-fallback ở nhiều nơi.
-
-Ghi chú: app/chunking/semantic_chunker.py (Phase 2) hiện đang tự định
-nghĩa `_count_tokens` riêng — có thể refactor để import từ đây khi tiện,
-không bắt buộc vì không ảnh hưởng tính đúng đắn.
+prompt budgeting...). tiktoken cl100k_base nếu load được; nếu không (thiếu
+package hoặc không tải được file BPE lần đầu do chặn mạng) thì ước lượng
+~1.3 token/từ. Docker image bake sẵn cache tiktoken (xem Dockerfile).
 """
 from __future__ import annotations
 

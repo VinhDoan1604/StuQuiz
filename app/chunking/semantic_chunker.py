@@ -32,6 +32,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from app.models.schemas import BlockType, Chunk, ChunkMetadata, ParsedBlock, ParsedDocument
+from app.utils.tokens import count_tokens as _count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -39,38 +40,6 @@ CHILD_MIN_TOKENS = 200
 CHILD_MAX_TOKENS = 400
 CHILD_OVERLAP_TOKENS = 50
 PARENT_MAX_TOKENS = 1500
-
-def _load_tiktoken_counter():
-    """Thử load tiktoken cl100k_base. Có thể fail vì 2 lý do độc lập:
-    (1) chưa cài package, hoặc (2) đã cài nhưng lần đầu chạy cần tải file
-    BPE qua mạng và môi trường (CI, container air-gapped, ...) chặn mạng
-    ra ngoài — network lỗi vẫn là Exception bình thường của thư viện,
-    KHÔNG phải ImportError, nên phải bắt riêng để không crash cả module.
-    Production nên bake sẵn cache tiktoken vào image (xem README) để
-    tránh phụ thuộc mạng lúc runtime."""
-    try:
-        import tiktoken
-
-        encoder = tiktoken.get_encoding("cl100k_base")
-        return lambda text: len(encoder.encode(text))
-    except ImportError:
-        logger.warning("tiktoken chưa được cài — dùng ước lượng token xấp xỉ (kém chính xác hơn).")
-    except Exception as exc:  # lỗi mạng khi tải BPE file, cache hỏng, ...
-        logger.warning(
-            "tiktoken cài rồi nhưng không load được encoding (%s) — dùng ước lượng token "
-            "xấp xỉ. Cân nhắc bake sẵn tiktoken cache vào Docker image cho production.",
-            exc,
-        )
-    return None
-
-
-_TOKEN_COUNTER = _load_tiktoken_counter()
-
-
-def _count_tokens(text: str) -> int:
-    if _TOKEN_COUNTER is not None:
-        return _TOKEN_COUNTER(text)
-    return max(1, round(len(text.split()) * 1.3))
 
 
 _CONTENT_TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [

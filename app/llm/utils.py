@@ -28,7 +28,7 @@ không phải ở đây.
 from __future__ import annotations
 
 import logging
-from typing import TypeVar, Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -53,12 +53,13 @@ def extract_text_from_response(response: Any) -> str:
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
-            elif isinstance(item, dict) and "text" in item:
-                parts.append(str(item["text"]))
-            elif hasattr(item, "text"):
+            elif isinstance(item, dict):
+                # Chỉ lấy block văn bản; bỏ qua block thinking/reasoning (vd Gemini 2.5
+                # trả {'type': 'thinking', 'thinking': ''}) — trước đây bị str() dán vào câu trả lời.
+                if item.get("type", "text") == "text" and "text" in item:
+                    parts.append(str(item["text"]))
+            elif hasattr(item, "text") and getattr(item, "type", "text") == "text":
                 parts.append(str(getattr(item, "text")))
-            else:
-                parts.append(str(item))
         return "".join(parts).strip()
     return str(content).strip()
 

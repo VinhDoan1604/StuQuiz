@@ -1,22 +1,23 @@
 """
 scripts/seed_demo.py
 
-Seed dữ liệu demo chuyên nghiệp cho StudyRAG:
-- 1 User học viên mẫu (`student@studyrag.edu.vn`)
+Seed dữ liệu demo cho StudyRAG (chỉ APP_ENV=dev):
+- 1 User học viên mẫu: student@studyrag.edu.vn / demo12345 (đã xác thực)
+- 1 Không gian học tập chứa 2 tài liệu mẫu
 - 2 Giáo trình chuyên sâu đã lập chỉ mục (Cấu trúc dữ liệu & RAG nâng cao)
 - 5 Bản ghi độ làm chủ kiến thức SuperMemo SM-2 (vững, yếu, chu kỳ ôn tập)
 - 1 Phiên Chat mẫu hoàn chỉnh với CRAG reflection trace và trích dẫn chuẩn
 - Các lượt làm bài Quiz lịch sử
 
-Script này giúp người dùng/nhà tuyển dụng mở ứng dụng lên là thấy đầy đủ
-timeline tư duy agent, biểu đồ mastery và trích dẫn đa tầng mà không cần thao tác thủ công.
+Lưu ý: 2 tài liệu mẫu chỉ có metadata (không có vector trong Qdrant) — dùng để xem
+lịch sử chat/quiz/mastery mẫu. Muốn hỏi đáp thật, hãy tải tài liệu lên qua UI.
 """
 from __future__ import annotations
 
 import os
 import sys
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 # Đảm bảo UTF-8 cho Windows console
 if hasattr(sys.stdout, "reconfigure"):
@@ -24,15 +25,19 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.db.session import Base, SessionLocal, engine
+from app.config import settings
+from app.core.security import hash_password
+from app.db.session import SessionLocal
 from app.models.db_models import (
-    User,
-    Document,
     ChatSession,
     ChatTurn,
+    Document,
     MasteryRecord,
     QuizAttempt,
+    StudySpace,
+    User,
 )
+from app.utils.time import utcnow
 
 
 def seed_demo_data():
@@ -40,8 +45,13 @@ def seed_demo_data():
     print("🌱 Đang chuẩn bị seed dữ liệu demo StudyRAG...")
     print("=" * 70)
 
-    # Đảm bảo bảng đã tồn tại
-    Base.metadata.create_all(bind=engine)
+    if not settings.is_dev:
+        sys.exit("seed_demo chỉ dành cho APP_ENV=dev.")
+
+    # Đảm bảo schema đã ở bản mới nhất (Alembic)
+    from scripts.init_db import main as migrate
+    sys.argv = sys.argv[:1]
+    migrate()
 
     db = SessionLocal()
     try:
@@ -52,7 +62,11 @@ def seed_demo_data():
             user = User(
                 id=demo_user_id,
                 email="student@studyrag.edu.vn",
-                created_at=datetime.utcnow() - timedelta(days=14),
+                full_name="Học viên mẫu",
+                password_hash=hash_password("demo12345"),
+                auth_provider="local",
+                is_verified=True,
+                created_at=utcnow() - timedelta(days=14),
             )
             db.add(user)
             db.commit()
@@ -71,8 +85,9 @@ def seed_demo_data():
                 filename="Giao_Trinh_Cau_Truc_Du_Lieu_Va_Giai_Thuat.pdf",
                 file_type="pdf",
                 subject="Khoa Học Máy Tính",
-                uploaded_at=datetime.utcnow() - timedelta(days=10),
+                uploaded_at=utcnow() - timedelta(days=10),
                 num_chunks=48,
+                status="ready",
             )
             db.add(doc1)
             print(f"✅ Đã nạp tài liệu: {doc1.filename} ({doc1.num_chunks} chunks)")
@@ -84,13 +99,27 @@ def seed_demo_data():
                 filename="Kien_Truc_RAG_Nang_Cao_Va_He_Agent.pdf",
                 file_type="pdf",
                 subject="Trí Tuệ Nhân Tạo & NLP",
-                uploaded_at=datetime.utcnow() - timedelta(days=5),
+                uploaded_at=utcnow() - timedelta(days=5),
                 num_chunks=36,
+                status="ready",
             )
             db.add(doc2)
             print(f"✅ Đã nạp tài liệu: {doc2.filename} ({doc2.num_chunks} chunks)")
 
         db.commit()
+
+        space_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "demo_space_cs"))
+        if not db.get(StudySpace, space_id):
+            db.add(StudySpace(
+                id=space_id,
+                user_id=user.id,
+                title="Khoa học máy tính & RAG",
+                description="Không gian mẫu: CTDL & Giải thuật, kiến trúc RAG đa tác tử.",
+                document_ids=[doc1_id, doc2_id],
+                created_at=utcnow() - timedelta(days=10),
+            ))
+            db.commit()
+            print("✅ Đã tạo không gian học tập mẫu.")
 
         # 3. Bản ghi SuperMemo SM-2 Spaced Repetition Mastery
         mastery_samples = [
@@ -156,8 +185,8 @@ def seed_demo_data():
                     streak=item["streak"],
                     correct_count=item["correct_count"],
                     incorrect_count=item["incorrect_count"],
-                    last_reviewed_at=datetime.utcnow() - timedelta(days=item["days_ago"]),
-                    next_review_due_at=datetime.utcnow() + timedelta(days=item["due_in_days"]),
+                    last_reviewed_at=utcnow() - timedelta(days=item["days_ago"]),
+                    next_review_due_at=utcnow() + timedelta(days=item["due_in_days"]),
                 )
                 db.add(rec)
         db.commit()
@@ -170,7 +199,9 @@ def seed_demo_data():
             chat_session = ChatSession(
                 id=session_id,
                 user_id=user.id,
-                created_at=datetime.utcnow() - timedelta(hours=2),
+                space_id=space_id,
+                title="Dijkstra & trọng số âm",
+                created_at=utcnow() - timedelta(hours=2),
                 rolling_summary="Học viên đã tìm hiểu về thuật toán tìm đường đi ngắn nhất Dijkstra và sự khác biệt giữa đồ thị trọng số dương và âm. Tiếp theo học viên nghiên cứu kiến trúc CRAG đa tác tử.",
                 summarized_turn_count=2,
             )
@@ -184,7 +215,7 @@ def seed_demo_data():
                 role="user",
                 intent="qa",
                 content="Thuật toán Dijkstra có xử lý được đồ thị có trọng số âm không? Nếu không thì giải thuật nào giải quyết được?",
-                created_at=datetime.utcnow() - timedelta(minutes=90),
+                created_at=utcnow() - timedelta(minutes=90),
             )
             turn1_bot = ChatTurn(
                 id=str(uuid.uuid4()),
@@ -213,7 +244,7 @@ def seed_demo_data():
                     "answer_faithful": True,
                     "num_loops": 0,
                 },
-                created_at=datetime.utcnow() - timedelta(minutes=89),
+                created_at=utcnow() - timedelta(minutes=89),
             )
 
             # Turn 2: CRAG Reflection loop demo
@@ -223,7 +254,7 @@ def seed_demo_data():
                 role="user",
                 intent="teaching",
                 content="Khi tác tử Retrieval tìm kiếm ngữ cảnh không đạt yêu cầu, Corrective RAG (CRAG) sẽ phản ứng thế nào?",
-                created_at=datetime.utcnow() - timedelta(minutes=30),
+                created_at=utcnow() - timedelta(minutes=30),
             )
             turn2_bot = ChatTurn(
                 id=str(uuid.uuid4()),
@@ -253,7 +284,7 @@ def seed_demo_data():
                     "answer_faithful": True,
                     "num_loops": 1,
                 },
-                created_at=datetime.utcnow() - timedelta(minutes=29),
+                created_at=utcnow() - timedelta(minutes=29),
             )
 
             db.add_all([turn1_user, turn1_bot, turn2_user, turn2_bot])
@@ -264,6 +295,7 @@ def seed_demo_data():
         quiz1 = QuizAttempt(
             id=str(uuid.uuid4()),
             user_id=user.id,
+            space_id=space_id,
             topic="Thuật toán Dijkstra & Đường đi ngắn nhất",
             question="Thuật toán Dijkstra sử dụng cấu trúc dữ liệu nào sau đây để tối ưu việc tìm đỉnh có khoảng cách nhỏ nhất?",
             choices=[
@@ -275,7 +307,7 @@ def seed_demo_data():
             correct_choice="B. Hàng đợi ưu tiên (Min-Priority Queue / Min-Heap)",
             user_choice="B. Hàng đợi ưu tiên (Min-Priority Queue / Min-Heap)",
             is_correct=True,
-            created_at=datetime.utcnow() - timedelta(days=1),
+            created_at=utcnow() - timedelta(days=1),
         )
         db.add(quiz1)
         db.commit()
@@ -283,7 +315,7 @@ def seed_demo_data():
 
         print("=" * 70)
         print("🎉 HOÀN THÀNH SEED DỮ LIỆU DEMO THÀNH CÔNG!")
-        print(f"👉 Người dùng mẫu: {user.email}")
+        print(f"👉 Đăng nhập: {user.email} / demo12345")
         print(f"👉 Session ID: {session_id}")
         print("=" * 70)
 

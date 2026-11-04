@@ -13,13 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.db_models import ChatSession, Document, StudySpace, User
-
-
-def _valid_uuid(value: str | None) -> str | None:
-    try:
-        return str(uuid.UUID(str(value)))
-    except (ValueError, AttributeError, TypeError):
-        return None
+from app.utils.ids import parse_uuid as _valid_uuid
 
 
 def get_owned_space(db: Session, user: User, space_id: str) -> StudySpace:
@@ -85,9 +79,10 @@ def resolve_owned_document_ids(
 
 def scope_session_id(raw_session_id: str, user: User) -> str:
     """
-    Client có thể gửi session_id tuỳ ý (vd 'session_abc'). Nếu để nguyên, hai user
-    chọn trùng chuỗi sẽ va chạm cùng 1 ChatSession. Id không phải UUID được gắn
-    thêm user.id trước khi băm; UUID hợp lệ giữ nguyên (rồi kiểm tra chủ sở hữu).
+    Client nên gửi UUID (crypto.randomUUID). Chuỗi tuỳ ý khác (vd 'session_abc')
+    vẫn được chấp nhận nhưng gắn thêm user.id trước khi băm để hai user chọn trùng
+    chuỗi không va chạm cùng 1 ChatSession. UUID hợp lệ giữ nguyên (rồi kiểm tra
+    chủ sở hữu bằng assert_session_owner).
     """
     valid = _valid_uuid(raw_session_id)
     if valid:

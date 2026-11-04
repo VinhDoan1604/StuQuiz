@@ -10,43 +10,21 @@ Bộ kiểm thử tự động toàn diện cho LangGraph StateGraph (app/graph/
 6. Kiểm tra tích hợp bộ nhớ (Memory, ChatTurn, Mastery, ReflectionTrace).
 7. Kiểm tra xử lý ngoại lệ và fallback an toàn (Fail-Open/Graceful degradation).
 """
-import os
-import sys
+import asyncio
 import uuid
-import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, patch
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from app.db.session import Base
-from app.models.db_models import ChatSession, ChatTurn, MasteryRecord
-from app.agents.state import GraphState, ReflectionResult
+from app.agents.state import GraphState
 from app.graph.build_graph import (
+    _extract_reflection_trace,
     build_study_graph,
-    get_graph,
+    route_after_grade_answer,
+    route_after_grade_context,
     route_after_orchestrator,
     route_after_retrieval,
-    route_after_grade_context,
-    route_after_grade_answer,
-    _extract_reflection_trace,
     run_graph,
 )
-
-
-@pytest.fixture
-def mock_db_session():
-    """Tạo SQLite in-memory database độc lập hoàn toàn cho unit test."""
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine)
-    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    session = TestingSession()
-    try:
-        yield session
-    finally:
-        session.close()
+from app.models.db_models import ChatSession, ChatTurn
 
 
 def test_graph_topology():
@@ -155,30 +133,20 @@ def test_extract_reflection_trace():
     assert len(trace["rewritten_queries"]) == 1
 
 
-import asyncio
-
-
 def test_run_graph_empty_message():
     """Tin nhắn rỗng phải trả về phản hồi mặc định ngay lập tức mà không tốn LLM call."""
-    res = asyncio.run(run_graph(session_id="test_sess", user_message="   "))
+    res = asyncio.run(run_graph(session_id=str(uuid.uuid4()), user_id=str(uuid.uuid4()), user_message="   "))
     assert res["intent"] == "qa"
     assert len(res["answer"]) > 0
     assert res["reflection"]["num_loops"] == 0
 
 
-def test_run_graph_end_to_end_mocked():
+def test_run_graph_end_to_end_mocked(session_factory):
     """Kiểm tra toàn bộ luồng run_graph với Mock các Agent calls và in-memory SQLite session."""
     async def _run():
-        from sqlalchemy.pool import StaticPool
-        engine = create_engine(
-            "sqlite:///:memory:",
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
-        )
-        Base.metadata.create_all(bind=engine)
-        TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
+        TestingSession = session_factory
         session_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
 
         mock_chunks = [
             {"text": "Dijkstra tìm đường đi ngắn nhất từ 1 đỉnh nguồn.", "source_file": "dsa.pdf", "page": 45, "section": "Đồ thị"}
@@ -200,9 +168,15 @@ def test_run_graph_end_to_end_mocked():
             }
             mock_ga.return_value = {"answer_grade": 0.95, "answer_faithful": True, "feedback": ""}
 
-            result = await run_graph(session_id=session_id, user_message="Dijkstra dùng để làm gì?")
+            result = await run_graph(
+                session_id=session_id, user_id=user_id, user_message="Dijkstra dùng để làm gì?",
+                document_ids=["doc-1"],
+            )
 
             assert result["intent"] == "qa"
+            assert result["session_id"] == session_id
+            # retrieval nhận đúng phạm vi tài liệu đã xác thực
+            assert mock_retr.call_args.args[0]["document_ids"] == ["doc-1"]
             assert "Dijkstra là thuật toán tìm đường đi ngắn nhất" in result["answer"]
             assert len(result["citations"]) == 1
             assert result["citations"][0]["file"] == "dsa.pdf"
@@ -219,6 +193,9 @@ def test_run_graph_end_to_end_mocked():
             assert user_turn.content == "Dijkstra dùng để làm gì?"
             assert "Dijkstra" in asst_turn.content
             assert asst_turn.reflection_trace is not None
+            # phiên mới được đặt tiêu đề theo câu hỏi đầu tiên, đúng chủ sở hữu
+            sess = db.get(ChatSession, session_id)
+            assert sess.user_id == user_id and sess.title == "Dijkstra dùng để làm gì?"
             db.close()
 
     asyncio.run(_run())

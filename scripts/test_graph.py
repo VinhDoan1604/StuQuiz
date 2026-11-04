@@ -7,11 +7,11 @@ Script kiểm thử toàn diện luồng LangGraph StateGraph (Phase 1 / Bước
 - Chạy thử nghiệm mô phỏng (Simulated flow) với CRAG và Self-RAG reflection loops.
 - Chạy thử nghiệm Live end-to-end với LLM thật (Google Gemini).
 """
+import asyncio
 import os
 import sys
 import time
 import uuid
-import asyncio
 
 # Đảm bảo import được module app
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -19,24 +19,23 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
+from unittest.mock import AsyncMock, patch
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from unittest.mock import patch, AsyncMock
 
-from app.db.session import Base
-from app.models.db_models import ChatSession, ChatTurn, MasteryRecord
 from app.agents.state import GraphState
+from app.db.session import Base
 from app.graph.build_graph import (
-    build_study_graph,
     get_graph,
+    route_after_grade_answer,
+    route_after_grade_context,
     route_after_orchestrator,
     route_after_retrieval,
-    route_after_grade_context,
-    route_after_grade_answer,
-    _extract_reflection_trace,
     run_graph,
 )
+from app.models.db_models import ChatTurn
 
 
 def print_header(title: str):
@@ -49,7 +48,7 @@ def test_topology():
     print_header("1. KIỂM TRA TOPOLOGY ĐỒ THỊ LANGGRAPH")
     graph = get_graph()
     nodes = list(graph.nodes.keys())
-    print(f"[*] Đồ thị StateGraph đã biên dịch thành công!")
+    print("[*] Đồ thị StateGraph đã biên dịch thành công!")
     print(f"[*] Tổng số Node: {len(nodes)}")
     for i, node in enumerate(nodes, 1):
         print(f"    {i:02d}. Node: '{node}'")
@@ -144,9 +143,12 @@ async def test_simulated_execution():
         }
         mock_ga.return_value = {"answer_grade": 0.98, "answer_faithful": True, "feedback": ""}
 
-        print(f"[*] Đang gửi query: 'Độ phức tạp của thuật toán Dijkstra là bao nhiêu?'")
+        print("[*] Đang gửi query: 'Độ phức tạp của thuật toán Dijkstra là bao nhiêu?'")
         start_t = time.perf_counter()
-        resp = await run_graph(session_id=session_id, user_message="Độ phức tạp của thuật toán Dijkstra là bao nhiêu?")
+        resp = await run_graph(
+            session_id=session_id, user_id=str(uuid.uuid4()),
+            user_message="Độ phức tạp của thuật toán Dijkstra là bao nhiêu?",
+        )
         elapsed = (time.perf_counter() - start_t) * 1000
 
         print(f"[*] Kết quả trả về sau {elapsed:.1f}ms:")
@@ -181,7 +183,7 @@ async def test_live_execution():
 
     start_t = time.perf_counter()
     try:
-        resp = await run_graph(session_id=session_id, user_message=test_question)
+        resp = await run_graph(session_id=session_id, user_id=str(uuid.uuid4()), user_message=test_question)
         elapsed = (time.perf_counter() - start_t) * 1000
 
         print(f"\n[+] Phản hồi thành công từ LLM ({elapsed:.1f}ms):")

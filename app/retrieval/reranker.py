@@ -10,9 +10,12 @@ Ghi chú vận hành quan trọng:
 - Model được load 1 LẦN DUY NHẤT (lazy singleton, thread-safe qua
   double-checked locking) vì load checkpoint ~570M tham số tốn vài giây —
   KHÔNG load lại mỗi request.
-- Đây là bước chạy trên MỌI request QA/Teaching -> nếu chạy CPU, latency
-  rerank 20 cặp có thể là điểm nghẽn (thường vài trăm ms tới ~1s tuỳ CPU).
-  Code tự bật fp16 khi có GPU. Nếu benchmark cho thấy CPU quá chậm, cân
+- Đây là bước chạy trên MỌI request QA/Teaching -> trên CPU (fp32) rerank 20
+  cặp ~512 token với model 568M là điểm nghẽn LỚN (đo được ~100s/câu trên
+  laptop trong eval smoke). Code tự bật fp16 khi có GPU.
+- FlagEmbedding 1.4.x "dò batch size" bằng cách forward thử batch đầu rồi
+  forward LẠI batch đó trong vòng lặp chính. Với batch mặc định 128 (> số cặp)
+  toàn bộ cặp bị tính 2 lần -> đặt _BATCH_SIZE nhỏ để phần lặp chỉ còn vài cặp. Nếu benchmark cho thấy CPU quá chậm, cân
   nhắc: (a) giảm số candidate đưa vào rerank (top-10 thay top-20),
   (b) dùng bản ONNX/quantized của bge-reranker-v2-m3, hoặc (c) tách rerank
   thành service riêng có GPU.
@@ -26,6 +29,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _MODEL_NAME = "BAAI/bge-reranker-v2-m3"
+_BATCH_SIZE = 4  # xem ghi chú ở đầu file: tránh forward 2 lần toàn bộ cặp
+_MAX_LENGTH = 512  # chunk con 200-400 token + câu hỏi
 
 _reranker_instance = None
 _reranker_lock = threading.Lock()
@@ -63,12 +68,19 @@ def _get_reranker():
             use_fp16 = _detect_use_fp16()
             logger.info("Đang load reranker '%s' (fp16=%s)...", _MODEL_NAME, use_fp16)
             try:
-                _reranker_instance = FlagReranker(_MODEL_NAME, use_fp16=use_fp16)
+                _reranker_instance = FlagReranker(
+                    _MODEL_NAME, use_fp16=use_fp16, batch_size=_BATCH_SIZE, max_length=_MAX_LENGTH
+                )
             except Exception as exc:
                 raise RerankerError(f"Không load được reranker '{_MODEL_NAME}': {exc}") from exc
             logger.info("Reranker đã sẵn sàng.")
 
     return _reranker_instance
+
+
+def warmup() -> None:
+    """Tải model sẵn lúc khởi động (PRELOAD_MODELS=true)."""
+    _get_reranker()
 
 
 def _extract_text(candidate: dict[str, Any]) -> str:

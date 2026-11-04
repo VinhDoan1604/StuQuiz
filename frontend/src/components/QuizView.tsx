@@ -1,20 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, XCircle, ArrowRight, RotateCcw, Clock, Loader2 } from 'lucide-react';
 import {
+  errorMessage,
   generateQuiz,
   answerQuiz,
   fetchSpaceQuizHistory,
   type QuizQuestion,
   type QuizAnswerResult,
+  type QuizHistoryItem,
   type DocumentItem,
   type StudySpaceItem,
-  type UserProfile,
 } from '../services/api';
 
 interface QuizViewProps {
   documents: DocumentItem[];
   activeSpace?: StudySpaceItem | null;
-  user?: UserProfile | null; // giữ lại cho tương thích; danh tính do server lấy từ token
 }
 
 export const QuizView = ({ documents, activeSpace }: QuizViewProps) => {
@@ -29,20 +29,21 @@ export const QuizView = ({ documents, activeSpace }: QuizViewProps) => {
 
   const [numQuestions, setNumQuestions] = useState(5);
   const [topicPrompt, setTopicPrompt] = useState('');
-  const [quizHistory, setQuizHistory] = useState<any[]>([]);
+  const [quizHistory, setQuizHistory] = useState<QuizHistoryItem[]>([]);
 
-  const loadQuizHistory = async () => {
-    if (!activeSpace) return;
+  const spaceId = activeSpace?.id;
+  const loadQuizHistory = useCallback(async () => {
+    if (!spaceId) return;
     try {
-      setQuizHistory(await fetchSpaceQuizHistory(activeSpace.id));
+      setQuizHistory(await fetchSpaceQuizHistory(spaceId));
     } catch (e) {
-      console.warn('Failed to load quiz history:', e);
+      console.warn('Không tải được lịch sử quiz:', e);
     }
-  };
+  }, [spaceId]);
 
   useEffect(() => {
-    if (activeSpace) loadQuizHistory();
-  }, [activeSpace]);
+    loadQuizHistory();
+  }, [loadQuizHistory]);
 
   const resetRun = () => {
     setCurrentIndex(0);
@@ -59,22 +60,20 @@ export const QuizView = ({ documents, activeSpace }: QuizViewProps) => {
     }
     setIsGenerating(true);
     try {
-      const generated = await generateQuiz(
-        documents.map((d) => d.id),
+      const generated = await generateQuiz({
+        documentIds: documents.map((d) => d.id),
         numQuestions,
-        true,
-        '',
         topicPrompt,
-        activeSpace?.id
-      );
+        spaceId: activeSpace?.id,
+      });
       if (generated && generated.length > 0) {
         setQuestions(generated);
         resetRun();
       } else {
         alert('Không tìm thấy nội dung phù hợp để sinh câu hỏi. Vui lòng kiểm tra lại tài liệu.');
       }
-    } catch (err: any) {
-      alert(`Lỗi sinh quiz: ${err.message || 'Hệ thống đang bận'}`);
+    } catch (err) {
+      alert(`Lỗi sinh quiz: ${errorMessage(err, 'Hệ thống đang bận')}`);
     } finally {
       setIsGenerating(false);
     }
@@ -90,9 +89,9 @@ export const QuizView = ({ documents, activeSpace }: QuizViewProps) => {
       setResult(res);
       if (res.is_correct) setScore((s) => s + 1);
       if (activeSpace) loadQuizHistory();
-    } catch (e: any) {
+    } catch (e) {
       setSelectedChoice(null);
-      alert(`Không ghi nhận được câu trả lời: ${e.message || 'lỗi mạng'}`);
+      alert(`Không ghi nhận được câu trả lời: ${errorMessage(e, 'lỗi mạng')}`);
     } finally {
       setIsSubmitting(false);
     }

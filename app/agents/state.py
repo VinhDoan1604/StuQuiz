@@ -1,10 +1,8 @@
-# STATUS: READY
 """
-State schema dùng chung cho toàn bộ LangGraph StateGraph (mục 5.12 tài
-liệu gốc). Đây là "hợp đồng dữ liệu" giữa các node/agent — nên định nghĩa
-rõ ràng trước, còn logic từng agent implement dần trong app/agents/*.
+State schema dùng chung cho LangGraph StateGraph — "hợp đồng dữ liệu" giữa
+các node/agent trong app/agents/* và app/graph/build_graph.py.
 """
-from typing import TypedDict, Literal, Any
+from typing import Any, Literal, TypedDict
 
 
 class ReflectionResult(TypedDict, total=False):
@@ -21,7 +19,7 @@ class GraphState(TypedDict, total=False):
     # Input
     session_id: str
     user_query: str
-    document_ids: list[str] | None
+    document_ids: list[str]   # phạm vi tài liệu đã xác thực (rỗng = không có tài liệu)
 
     # Orchestrator output
     intent: Literal["qa", "teaching", "quiz", "summary"]

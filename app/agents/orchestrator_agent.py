@@ -28,8 +28,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.llm.utils import LLMCallError, acall_structured
 from app.agents.state import GraphState
+from app.llm.utils import LLMCallError, acall_structured
+from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ def _pick_review_topic(mastery_context: dict) -> str | None:
     nhất vẫn CHƯA tới hạn (vd mới học, chỉ đơn thuần điểm thấp), KHÔNG gợi
     ý — tránh nhắc ôn tập chưa đúng lúc."""
     weak_topics = mastery_context.get("weak_topics") or []
-    now = datetime.utcnow()
+    now = utcnow()
     for t in weak_topics:
         topic = t.get("topic") if isinstance(t, dict) else getattr(t, "topic", None)
         due_raw = t.get("next_review_due_at") if isinstance(t, dict) else getattr(t, "next_review_due_at", None)

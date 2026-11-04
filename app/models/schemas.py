@@ -1,4 +1,3 @@
-# STATUS: READY
 """
 Pydantic schemas cho toàn bộ hệ thống StudyRAG:
 - Ingestion models (ParsedBlock, ParsedDocument)
@@ -14,6 +13,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.utils.time import utcnow
 
 # ===========================================================================
 # 1. Ingestion Schemas (pipeline: parsing -> cleaning -> chunking)
@@ -43,7 +43,7 @@ class ParsedDocument(BaseModel):
     file_type: str                      # "pdf" | "docx" | "pptx"
     blocks: list[ParsedBlock] = Field(default_factory=list)
     total_pages: int = 0
-    parsed_at: datetime = Field(default_factory=datetime.utcnow)
+    parsed_at: datetime = Field(default_factory=utcnow)
     warnings: list[str] = Field(default_factory=list)   # OCR confidence thấp, trang lỗi, ...
     doc_metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -98,11 +98,24 @@ class Chunk(BaseModel):
 # ===========================================================================
 
 class ChatRequest(BaseModel):
-    session_id: str
-    message: str
-    document_ids: Optional[list[str]] = None
+    # Danh tính user luôn lấy từ JWT, không nhận user_id từ client.
+    session_id: str = Field(min_length=1, max_length=128)
+    message: str = Field(max_length=20_000)   # giới hạn nghiệp vụ: settings.max_chat_message_chars
+    document_ids: Optional[list[str]] = Field(default=None, max_length=200)
     space_id: Optional[str] = None
-    user_id: Optional[str] = "demo_user"
+    # "<provider>:<model>" lấy từ GET /chat/models; None = model mặc định của server
+    model: Optional[str] = Field(default=None, max_length=200)
+
+
+class ChatModelItem(BaseModel):
+    id: str
+    provider: str
+    model: str
+    label: str
+
+
+class ChatModelsResponse(BaseModel):
+    models: list[ChatModelItem]
 
 
 class ReflectionTrace(BaseModel):
@@ -128,7 +141,7 @@ class QuizQuestionOut(BaseModel):          # trả cho client: KHÔNG có đáp 
 
 class QuizAnswerRequest(BaseModel):
     attempt_id: str
-    choice: str
+    choice: str = Field(max_length=2000)
 
 
 class QuizAnswerResult(BaseModel):
@@ -139,9 +152,10 @@ class QuizAnswerResult(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    session_id: Optional[str] = None       # id phiên đã chuẩn hoá phía server
     intent: Literal["qa", "teaching", "quiz", "summary"]
     answer: str
-    citations: list[dict[str, Any]] = []   # [{"file": ..., "page": ...}]
+    citations: list[dict[str, Any]] = []   # [{"index", "file", "page", "section", "snippet"}]
     reflection: ReflectionTrace
 
 
@@ -155,11 +169,10 @@ class QuizQuestion(BaseModel):
 
 
 class QuizGenerateRequest(BaseModel):
-    document_ids: list[str]
-    user_id: Optional[str] = "demo_user"
+    document_ids: list[str] = Field(max_length=200)
     space_id: Optional[str] = None
-    topic_prompt: Optional[str] = None
-    num_questions: int = 5
+    topic_prompt: Optional[str] = Field(default=None, max_length=500)
+    num_questions: int = Field(default=5, ge=1, le=20)
     prioritize_weak_topics: bool = True
 
 

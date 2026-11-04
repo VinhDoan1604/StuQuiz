@@ -64,10 +64,28 @@ _CORRECTNESS_SYSTEM = """Bạn là giám khảo chấm độ đúng của câu t
 Chỉ so với đáp án chuẩn, không dùng kiến thức riêng. reason: 1 câu ngắn."""
 
 
+def make_judge_llm(provider: str, model: str) -> Any:
+    """Chat model cho judge: temperature 0; Claude cần max_tokens đủ lớn cho tới 15 claim
+    tiếng Việt (mặc định của langchain-anthropic có thể cắt cụt tool call)."""
+    from app.llm.providers import build_chat_model, get_provider
+
+    try:
+        spec = get_provider(provider)
+        params: dict[str, Any] = {"model": model, "temperature": 0.0}
+        if spec.protocol == "anthropic":
+            params["max_tokens"] = 4096
+        return build_chat_model(spec, model, params)
+    except ValueError as exc:
+        raise JudgeError(f"Không tạo được judge LLM ({provider}/{model}): {exc}") from exc
+
+
 def build_judge_llm() -> tuple[Any, dict]:
-    """Trả về (llm, meta). meta.same_as_generator=True nghĩa là judge trùng model sinh."""
-    provider = (os.getenv("EVAL_JUDGE_PROVIDER") or settings.strong_model_provider).lower()
-    model = os.getenv("EVAL_JUDGE_MODEL") or settings.strong_model_name
+    """Trả về (llm, meta). meta.same_as_generator=True nghĩa là judge trùng model sinh.
+    Thứ tự ưu tiên: biến môi trường EVAL_JUDGE_* > .env (settings) > STRONG model."""
+    provider = (
+        os.getenv("EVAL_JUDGE_PROVIDER") or settings.eval_judge_provider or settings.strong_model_provider
+    ).strip().lower()
+    model = (os.getenv("EVAL_JUDGE_MODEL") or settings.eval_judge_model or settings.strong_model_name).strip()
     same = (provider, model) == (settings.cheap_model_provider.lower(), settings.cheap_model_name)
     meta = {"provider": provider, "model": model, "same_as_generator": same}
     if same:
@@ -76,26 +94,10 @@ def build_judge_llm() -> tuple[Any, dict]:
             provider, model,
         )
 
-    if provider in ("google", "gemini"):
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        llm = ChatGoogleGenerativeAI(
-            model=model, google_api_key=settings.effective_google_api_key, temperature=0.0
-        )
-    elif provider == "openai":
-        from langchain_openai import ChatOpenAI
-
-        llm = ChatOpenAI(model=model, api_key=settings.openai_api_key, temperature=0.0)
-    elif provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-
-        llm = ChatAnthropic(model=model, api_key=settings.anthropic_api_key, temperature=0.0)
-    else:
-        raise JudgeError(f"Provider judge không hỗ trợ: {provider}")
-    return llm, meta
+    return make_judge_llm(provider, model), meta
 
 
-async def _structured(llm: Any, model_cls: Type[T], system: str, user: str, retries: int = 3) -> T:
+async def _structured(llm: Any, model_cls: Type[T], system: str, user: str, retries: int = 5) -> T:
     runnable = llm.with_structured_output(model_cls)
     last: Optional[Exception] = None
     for attempt in range(retries):
@@ -104,7 +106,10 @@ async def _structured(llm: Any, model_cls: Type[T], system: str, user: str, retr
             return res if isinstance(res, model_cls) else model_cls.model_validate(res)
         except Exception as exc:  # mạng, 429, parse, None trả về...
             last = exc
-            await asyncio.sleep(2**attempt)
+            # Proxy trả 403 "quota exhausted" xen kẽ với lần thành công (check-v4/v5) -> chờ lâu
+            # hơn: 5,15,30,60s. Lỗi vẫn còn thì run.py chấm lại sau (không sinh lại câu trả lời).
+            if attempt < retries - 1:
+                await asyncio.sleep((5, 15, 30, 60)[min(attempt, 3)])
     raise JudgeError(f"Judge thất bại sau {retries} lần: {type(last).__name__}: {last}")
 
 

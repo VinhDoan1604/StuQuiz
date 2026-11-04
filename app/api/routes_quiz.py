@@ -1,14 +1,11 @@
 """
-routes_quiz v2.
+Quiz: sinh đề và chấm điểm phía server.
 
 - /generate KHÔNG trả đáp án đúng cho client (QuizQuestionOut không có correct_choice).
 - /answer: server tự chấm đúng/sai từ bản ghi QuizAttempt, ghi lại lựa chọn của user và
   cập nhật mastery/spaced-repetition trong CÙNG 1 transaction. Idempotent: gửi lại
   cùng attempt trả về kết quả đã lưu, không cộng điểm lần 2.
 """
-import uuid
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -19,6 +16,8 @@ from app.db.session import get_db
 from app.memory.mastery_tracker import record_quiz_result
 from app.models.db_models import QuizAttempt, User
 from app.models.schemas import QuizAnswerRequest, QuizAnswerResult, QuizGenerateRequest, QuizQuestionOut
+from app.utils.ids import parse_uuid
+from app.utils.time import utcnow
 
 router = APIRouter()
 
@@ -52,9 +51,8 @@ def answer(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    try:
-        attempt_id = str(uuid.UUID(req.attempt_id))
-    except ValueError:
+    attempt_id = parse_uuid(req.attempt_id)
+    if attempt_id is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy câu hỏi.")
 
     attempt = (
@@ -71,11 +69,11 @@ def answer(
             raise HTTPException(status_code=400, detail="Lựa chọn không thuộc câu hỏi này.")
         attempt.user_choice = req.choice
         attempt.is_correct = req.choice == attempt.correct_choice
-        attempt.answered_at = datetime.utcnow()
+        attempt.answered_at = utcnow()
         db.flush()
         # Cập nhật mastery cùng session; record_quiz_result commit cả attempt + mastery
         record_quiz_result(db, user_id=str(user.id), topic=attempt.topic or "", is_correct=attempt.is_correct)
-        db.commit()  # phòng trường hợp topic rỗng làm record_quiz_result bỏ qua commit
+        db.commit()  # topic rỗng => record_quiz_result bỏ qua, vẫn phải lưu attempt
 
     return QuizAnswerResult(
         attempt_id=str(attempt.id),

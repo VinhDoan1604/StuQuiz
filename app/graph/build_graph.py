@@ -1,28 +1,25 @@
 """
-app/graph/build_graph.py  (v2)
+app/graph/build_graph.py
 
-Topology đồ thị KHÔNG đổi so với bản cũ (orchestrator -> retrieval -> CRAG loop ->
-generation -> Self-RAG loop -> accept; quiz/summary rẽ nhánh sau retrieval).
-Các node và hàm route_* giữ nguyên tên vì eval/pipelines.py import trực tiếp.
+LangGraph StateGraph: orchestrator -> retrieval -> (CRAG: grade_context <->
+rewrite_query) -> generation -> (Self-RAG: grade_answer <-> retry_generation)
+-> accept_answer; intent quiz/summary rẽ sang quiz_summary sau retrieval.
+Các node và hàm route_* được eval/pipelines.py import trực tiếp — giữ nguyên tên.
 
-Thay đổi:
-1. Mọi thao tác DB đồng bộ (SQLAlchemy) chạy trong `asyncio.to_thread` với Session
-   riêng cho từng việc -> không còn chặn event loop của FastAPI.
-2. `maybe_summarize` (gọi LLM đồng bộ, vài giây) KHÔNG còn chạy trước khi trả
-   kết quả: chạy nền sau khi đã phản hồi, có khoá theo session để không gộp trùng.
-3. run_graph / stream_graph dùng chung _prepare_state / _build_response /
-   _persist (trước đây ~100 dòng bị lặp 2 lần).
-4. reflection trace trung thực: có `*_verified` (bộ chấm có chạy được không) và
-   `*_forced` (bị ép chấp nhận do hết lượt thử); citations được lưu cùng turn để
-   mở lại lịch sử vẫn thấy nguồn.
-5. `document_ids is None` mới nạp từ space (list rỗng nghĩa là "không có tài liệu").
+- Mọi thao tác DB đồng bộ (SQLAlchemy) chạy trong `asyncio.to_thread` với Session
+  riêng -> không chặn event loop.
+- `maybe_summarize` (gọi LLM, vài giây) chạy nền SAU khi đã phản hồi, có khoá
+  theo session để không gộp trùng.
+- Reflection trace trung thực: `*_verified` (bộ chấm có chạy được không) và
+  `*_forced` (bị ép chấp nhận do hết lượt thử); citations được lưu cùng turn.
+- Đầu vào (session_id, user_id, document_ids) ĐÃ được tầng API xác thực
+  (app/api/routes_chat.py): document_ids luôn là list, không bao giờ None.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import uuid
 from typing import Any, AsyncGenerator, Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -38,7 +35,6 @@ from app.db.session import SessionLocal
 from app.memory.chat_history import add_turn, get_or_create_session
 from app.memory.context_window import build_context, maybe_summarize
 from app.memory.mastery_tracker import get_weak_topics
-from app.models.db_models import StudySpace
 
 logger = logging.getLogger(__name__)
 
@@ -201,16 +197,6 @@ def get_graph():
 # ---------------------------------------------------------------------------
 # 4. Helpers dùng chung cho run_graph / stream_graph
 # ---------------------------------------------------------------------------
-def _normalize_uuid(val: str | None) -> str:
-    if not val:
-        return str(uuid.uuid4())
-    try:
-        uuid.UUID(str(val))
-        return str(val)
-    except (ValueError, AttributeError):
-        return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(val)))
-
-
 def _latest(history: list[dict], key: str) -> dict | None:
     return next((e for e in reversed(history) if key in e), None)
 
@@ -237,8 +223,9 @@ def _empty_trace() -> dict[str, Any]:
     return _extract_reflection_trace({})
 
 
-def _greeting_response() -> dict[str, Any]:
+def _greeting_response(session_id: str | None = None) -> dict[str, Any]:
     return {
+        "session_id": session_id,
         "intent": "qa",
         "answer": "Xin chào! Bạn có thể đặt câu hỏi về tài liệu học tập, yêu cầu giảng bài hoặc làm bài trắc nghiệm.",
         "citations": [],
@@ -246,8 +233,9 @@ def _greeting_response() -> dict[str, Any]:
     }
 
 
-def _error_response() -> dict[str, Any]:
+def _error_response(session_id: str | None = None) -> dict[str, Any]:
     return {
+        "session_id": session_id,
         "intent": "qa",
         "answer": "Xin lỗi, đã xảy ra sự cố khi xử lý câu hỏi. Vui lòng thử lại sau.",
         "citations": [],
@@ -255,8 +243,9 @@ def _error_response() -> dict[str, Any]:
     }
 
 
-def _build_response(final_state: dict[str, Any]) -> dict[str, Any]:
+def _build_response(session_id: str, final_state: dict[str, Any]) -> dict[str, Any]:
     return {
+        "session_id": session_id,
         "intent": final_state.get("intent", "qa"),
         "answer": final_state.get("final_answer") or final_state.get("answer_draft") or "",
         "citations": final_state.get("citations") or [],
@@ -265,16 +254,14 @@ def _build_response(final_state: dict[str, Any]) -> dict[str, Any]:
 
 
 # --- Các hàm ĐỒNG BỘ (chạy trong thread, mỗi hàm tự mở Session) -------------
-def _load_memory_sync(
-    db_session_id: str, db_user_id: str, space_id: str | None, message: str, document_ids: list[str] | None
-) -> tuple[str, dict[str, Any], list[str] | None]:
+def _load_memory_sync(session_id: str, user_id: str, space_id: str | None, message: str) -> tuple[str, dict[str, Any]]:
     summary, mastery = "", {}
     with SessionLocal() as db:
         try:
-            chat_session = get_or_create_session(db, session_id=db_session_id, user_id=db_user_id, space_id=space_id)
-            add_turn(db, session_id=db_session_id, role="user", content=message)
-            summary = build_context(db, session_id=db_session_id, token_budget=1000)
-            weak = get_weak_topics(db, user_id=str(chat_session.user_id or db_user_id), limit=5)
+            get_or_create_session(db, session_id=session_id, user_id=user_id, space_id=space_id, first_message=message)
+            add_turn(db, session_id=session_id, role="user", content=message)
+            summary = build_context(db, session_id=session_id, token_budget=1000)
+            weak = get_weak_topics(db, user_id=user_id, limit=5)
             mastery = {
                 "weak_topics": [
                     {
@@ -290,28 +277,21 @@ def _load_memory_sync(
         except Exception as exc:
             db.rollback()
             logger.warning("Không nạp được bộ nhớ hội thoại (%s) — dùng context rỗng.", exc)
-
-        if document_ids is None and space_id:
-            try:
-                sp = db.query(StudySpace).filter(StudySpace.id == space_id).first()
-                document_ids = list(sp.document_ids or []) if sp else []
-            except Exception as exc:
-                logger.warning("Không nạp được document_ids của space '%s': %s", space_id, exc)
-    return summary, mastery, document_ids
+    return summary, mastery
 
 
-def _save_assistant_turn_sync(db_session_id: str, response: dict[str, Any]) -> None:
+def _save_assistant_turn_sync(session_id: str, response: dict[str, Any]) -> None:
     trace = {**response["reflection"], "citations": response["citations"]}
     with SessionLocal() as db:
         add_turn(
-            db, session_id=db_session_id, role="assistant", content=response["answer"],
+            db, session_id=session_id, role="assistant", content=response["answer"],
             intent=response["intent"], reflection_trace=trace,
         )
 
 
-def _summarize_sync(db_session_id: str) -> None:
+def _summarize_sync(session_id: str) -> None:
     with SessionLocal() as db:
-        maybe_summarize(db, session_id=db_session_id)
+        maybe_summarize(db, session_id=session_id)
 
 
 # --- Tóm tắt nền -----------------------------------------------------------
@@ -319,18 +299,18 @@ _bg_tasks: set[asyncio.Task] = set()
 _summarizing: set[str] = set()
 
 
-def _schedule_summarize(db_session_id: str) -> None:
-    if db_session_id in _summarizing:
+def _schedule_summarize(session_id: str) -> None:
+    if session_id in _summarizing:
         return
-    _summarizing.add(db_session_id)
+    _summarizing.add(session_id)
 
     async def _job() -> None:
         try:
-            await asyncio.to_thread(_summarize_sync, db_session_id)
+            await asyncio.to_thread(_summarize_sync, session_id)
         except Exception:
-            logger.exception("Tóm tắt nền thất bại (session=%s).", db_session_id)
+            logger.exception("Tóm tắt nền thất bại (session=%s).", session_id)
         finally:
-            _summarizing.discard(db_session_id)
+            _summarizing.discard(session_id)
 
     task = asyncio.create_task(_job())
     _bg_tasks.add(task)
@@ -339,14 +319,10 @@ def _schedule_summarize(db_session_id: str) -> None:
 
 # --- Async wrappers --------------------------------------------------------
 async def _prepare_state(
-    session_id: str, message: str, document_ids: list[str] | None, space_id: str | None, user_id: str | None
-) -> tuple[str, GraphState]:
-    db_session_id = _normalize_uuid(session_id)
-    db_user_id = _normalize_uuid(user_id or "anonymous")
-    summary, mastery, document_ids = await asyncio.to_thread(
-        _load_memory_sync, db_session_id, db_user_id, space_id, message, document_ids
-    )
-    state: GraphState = {
+    session_id: str, message: str, document_ids: list[str], space_id: str | None, user_id: str
+) -> GraphState:
+    summary, mastery = await asyncio.to_thread(_load_memory_sync, session_id, user_id, space_id, message)
+    return {
         "session_id": session_id,
         "user_query": message,
         "chat_history_summary": summary,
@@ -360,16 +336,15 @@ async def _prepare_state(
         "final_answer": "",
         "document_ids": document_ids,
     }
-    return db_session_id, state
 
 
-async def _persist(db_session_id: str, response: dict[str, Any]) -> None:
+async def _persist(session_id: str, response: dict[str, Any]) -> None:
     try:
-        await asyncio.to_thread(_save_assistant_turn_sync, db_session_id, response)
+        await asyncio.to_thread(_save_assistant_turn_sync, session_id, response)
     except Exception as exc:
         logger.warning("Không lưu được lượt trả lời của trợ lý (%s).", exc)
         return
-    _schedule_summarize(db_session_id)
+    _schedule_summarize(session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -378,23 +353,23 @@ async def _persist(db_session_id: str, response: dict[str, Any]) -> None:
 async def run_graph(
     session_id: str,
     user_message: str,
+    user_id: str,
     document_ids: list[str] | None = None,
     space_id: str | None = None,
-    user_id: str | None = None,
 ) -> dict[str, Any]:
     message = (user_message or "").strip()
     if not message:
-        return _greeting_response()
+        return _greeting_response(session_id)
 
-    db_session_id, state = await _prepare_state(session_id, message, document_ids, space_id, user_id)
+    state = await _prepare_state(session_id, message, document_ids or [], space_id, user_id)
     try:
         final_state = await get_graph().ainvoke(state, config={"recursion_limit": 25})
     except Exception:
         logger.exception("run_graph: lỗi thực thi LangGraph.")
-        return _error_response()
+        return _error_response(session_id)
 
-    response = _build_response(final_state)
-    await _persist(db_session_id, response)
+    response = _build_response(session_id, final_state)
+    await _persist(session_id, response)
     return response
 
 
@@ -435,19 +410,19 @@ def _step_event(node: str, out: dict[str, Any]) -> dict[str, Any] | None:
 async def stream_graph(
     session_id: str,
     user_message: str,
+    user_id: str,
     document_ids: list[str] | None = None,
     space_id: str | None = None,
-    user_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """SSE: phát tiến trình từng node; gửi 'done' NGAY khi có đáp án (tóm tắt nền chạy sau)."""
     message = (user_message or "").strip()
     if not message:
-        yield _sse({"event": "done", "response": _greeting_response()})
+        yield _sse({"event": "done", "response": _greeting_response(session_id)})
         return
 
     try:
         yield _sse({"event": "status", "step": "init", "message": "Đang nạp bộ nhớ hội thoại..."})
-        db_session_id, state = await _prepare_state(session_id, message, document_ids, space_id, user_id)
+        state = await _prepare_state(session_id, message, document_ids or [], space_id, user_id)
 
         accumulated: dict[str, Any] = dict(state)
         async for chunk in get_graph().astream(state, stream_mode="updates", config={"recursion_limit": 25}):
@@ -457,9 +432,10 @@ async def stream_graph(
                 if event:
                     yield _sse(event)
 
-        response = _build_response(accumulated)
-        await _persist(db_session_id, response)
+        response = _build_response(session_id, accumulated)
+        await _persist(session_id, response)
         yield _sse({"event": "done", "response": response})
-    except Exception as exc:
+    except Exception:
+        # Không trả chi tiết exception cho client (có thể lộ cấu hình/nội bộ).
         logger.exception("stream_graph: lỗi trong quá trình stream.")
-        yield _sse({"event": "error", "message": str(exc)})
+        yield _sse({"event": "error", "message": "Đã xảy ra sự cố khi xử lý câu hỏi. Vui lòng thử lại."})

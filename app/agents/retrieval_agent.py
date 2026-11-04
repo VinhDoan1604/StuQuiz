@@ -37,21 +37,19 @@ riêng. Tương tự cho "quiz".
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
-from app.llm.utils import LLMCallError, acall_llm_text
-from app.retrieval.helpers import arerank, normalize_chunk, retrieve_top_k
+from app.agents.constants import FINAL_TOP_K_BROAD, FINAL_TOP_K_QA, HYBRID_TOP_K
 from app.agents.state import GraphState
-from app.retrieval.query_processing import decompose_query, rewrite_query
 from app.config import settings
+from app.llm.utils import LLMCallError, acall_llm_text
 from app.retrieval.expansion import aexpand_with_parents
+from app.retrieval.helpers import aget_all_chunks_for_documents, arerank, normalize_chunk, retrieve_top_k
+from app.retrieval.query_processing import decompose_query, rewrite_query
+
 logger = logging.getLogger(__name__)
 
-HYBRID_TOP_K = 20
-FINAL_TOP_K_QA = 5
-FINAL_TOP_K_BROAD = 15   # dùng cho intent quiz/summary trong chat (xem ghi chú đầu file)
 MAX_WEAK_TOPICS_PER_QUIZ_RETRIEVAL = 5
 
 
@@ -138,7 +136,7 @@ async def run_retrieval(state: GraphState) -> GraphState:
         main_query = await _reformulate_for_crag(user_query, crag_feedback)
         logger.info("run_retrieval: CRAG retry, query mới = '%s'", main_query)
     elif user_query:
-        main_query = await asyncio.to_thread(rewrite_query, user_query, chat_history_summary)
+        main_query = await rewrite_query(user_query, chat_history_summary)
     else:
         main_query = ""
 
@@ -147,7 +145,7 @@ async def run_retrieval(state: GraphState) -> GraphState:
 
     search_queries: list[str]
     final_top_k = FINAL_TOP_K_QA
-    document_ids = state.get("document_ids")  # Giới hạn tìm kiếm chỉ trong các tài liệu thuộc bộ chat được chọn
+    document_ids = state.get("document_ids") or []  # phạm vi tài liệu đã xác thực ở tầng API
 
     if intent == "quiz":
         weak_topics = _extract_weak_topic_names(state)
@@ -162,7 +160,7 @@ async def run_retrieval(state: GraphState) -> GraphState:
         search_queries.extend(["tổng quan kiến thức chính tóm tắt nội dung", "mục tiêu khái quát bài học"])
         final_top_k = FINAL_TOP_K_BROAD
     elif main_query:
-        search_queries = await asyncio.to_thread(decompose_query, main_query)
+        search_queries = await decompose_query(main_query)
     else:
         search_queries = []
 
@@ -171,11 +169,15 @@ async def run_retrieval(state: GraphState) -> GraphState:
         hits = await retrieve_top_k(q, top_k=final_top_k, hybrid_top_k=HYBRID_TOP_K, document_ids=document_ids)
         all_candidates.extend(normalize_chunk(h) for h in hits)
 
-    # Fallback cứu cánh: nếu search theo query không ra kết quả nào nhưng có chỉ định document_ids (vd: câu hỏi quá chung chung hoặc tên file không khớp)
+    # Fallback: search không ra kết quả nào nhưng có tài liệu trong phạm vi (vd câu hỏi
+    # quá chung chung) -> lấy trực tiếp chunk đầu của các tài liệu đó.
     if not all_candidates and document_ids:
-        logger.info("run_retrieval: search_queries không tìm thấy chunks, fallback lấy trực tiếp chunks từ document_ids: %s", document_ids)
-        from app.retrieval.helpers import aget_all_chunks_for_documents
-        raw_fallback = await aget_all_chunks_for_documents(document_ids)
+        logger.info("run_retrieval: không có kết quả search — fallback lấy chunk trực tiếp từ %d tài liệu.", len(document_ids))
+        try:
+            raw_fallback = await aget_all_chunks_for_documents(document_ids)
+        except Exception as exc:
+            logger.warning("run_retrieval: fallback lấy chunk thất bại (%s).", exc)
+            raw_fallback = []
         all_candidates.extend(normalize_chunk(c) for c in raw_fallback[:final_top_k * 2])
 
     pool = _dedupe_candidates(all_candidates)

@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.ownership import get_owned_space, resolve_owned_document_ids
@@ -13,15 +13,15 @@ router = APIRouter()
 
 
 class CreateSpaceRequest(BaseModel):
-    title: str
-    description: Optional[str] = None
-    icon: Optional[str] = "book"
+    title: str = Field(max_length=200)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    icon: Optional[str] = Field(default="book", max_length=50)
 
 
 class UpdateSpaceRequest(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    icon: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    icon: Optional[str] = Field(default=None, max_length=50)
 
 
 class AttachDocumentRequest(BaseModel):
@@ -123,6 +123,7 @@ def get_space_detail(space_id: str, user: User = Depends(get_current_user), db: 
                 "filename": d.filename,
                 "file_type": d.file_type,
                 "num_chunks": d.num_chunks,
+                "status": d.status or "ready",
                 "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
             }
             for d in docs
@@ -181,14 +182,20 @@ def get_space_chat_history(
         .order_by(ChatSession.created_at.desc())
         .all()
     )
-    result = []
-    for s in sessions:
-        turns = (
+    turns_by_session: dict[str, list[ChatTurn]] = {}
+    if sessions:
+        all_turns = (
             db.query(ChatTurn)
-            .filter(ChatTurn.session_id == s.id)
+            .filter(ChatTurn.session_id.in_([s.id for s in sessions]))
             .order_by(ChatTurn.created_at.asc())
             .all()
         )
+        for t in all_turns:
+            turns_by_session.setdefault(str(t.session_id), []).append(t)
+
+    result = []
+    for s in sessions:
+        turns = turns_by_session.get(str(s.id), [])
         if not turns:
             continue
         first_user_turn = next((t.content for t in turns if t.role == "user"), None)

@@ -11,14 +11,15 @@ import re
 import secrets
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.rate_limit import auth_limiter
 from app.core.security import (
     create_token,
     generate_otp,
@@ -31,8 +32,10 @@ from app.core.security import (
 from app.db.session import get_db
 from app.models.db_models import User
 from app.utils.mailer import send_verification_email
+from app.utils.time import utcnow
 
 router = APIRouter()
+limited = [Depends(auth_limiter)]
 logger = logging.getLogger("app.api.auth")
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -45,19 +48,19 @@ _DUMMY_HASH = hash_password("dummy-password-for-timing")
 # Schemas
 # ===========================================================================
 class RegisterRequest(BaseModel):
-    email: str
-    password: str
-    full_name: Optional[str] = None
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=256)
+    full_name: Optional[str] = Field(default=None, max_length=200)
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=256)
 
 
 class VerifyOtpRequest(BaseModel):
-    email: str
-    code: str
+    email: str = Field(max_length=254)
+    code: str = Field(max_length=12)
 
 
 class ResendOtpRequest(BaseModel):
@@ -134,7 +137,7 @@ def _seconds_since_otp_sent(user: User) -> Optional[float]:
     if not user.verification_code_expires_at:
         return None
     sent_at = user.verification_code_expires_at - timedelta(minutes=settings.otp_ttl_minutes)
-    return (datetime.utcnow() - sent_at).total_seconds()
+    return (utcnow() - sent_at).total_seconds()
 
 
 def _enforce_resend_cooldown(user: User) -> None:
@@ -149,16 +152,24 @@ def _enforce_resend_cooldown(user: User) -> None:
 def _issue_otp(db: Session, user: User) -> str:
     code = generate_otp()
     user.verification_code = hash_otp(user.email, code)  # chỉ lưu HMAC
-    user.verification_code_expires_at = datetime.utcnow() + timedelta(minutes=settings.otp_ttl_minutes)
+    user.verification_code_expires_at = utcnow() + timedelta(minutes=settings.otp_ttl_minutes)
     user.verification_attempts = 0
     db.commit()
     return code
 
 
+def _deliver_otp(email: str, code: str) -> None:
+    # Ở dev mã được trả về qua `dev_code` nên không cần email thật.
+    if not send_verification_email(email, code) and not settings.is_dev:
+        raise HTTPException(
+            status_code=503, detail="Không gửi được email xác thực. Vui lòng thử lại sau."
+        )
+
+
 # ===========================================================================
 # Local auth
 # ===========================================================================
-@router.post("/register", response_model=AuthResultResponse)
+@router.post("/register", response_model=AuthResultResponse, dependencies=limited)
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
     email = _clean_email(req.email)
     if len(req.password) < _MIN_PASSWORD_LEN:
@@ -191,11 +202,11 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
         db.refresh(user)
 
     code = _issue_otp(db, user)
-    send_verification_email(email, code)
+    _deliver_otp(email, code)
     return _otp_response(email, code, "Vui lòng nhập mã xác thực 6 số đã gửi tới email của bạn.")
 
 
-@router.post("/verify-otp", response_model=AuthResultResponse)
+@router.post("/verify-otp", response_model=AuthResultResponse, dependencies=limited)
 def verify_otp(req: VerifyOtpRequest, db: Session = Depends(get_db)):
     email = _clean_email(req.email)
     invalid = HTTPException(status_code=400, detail="Mã xác thực không hợp lệ hoặc đã hết hạn.")
@@ -208,7 +219,7 @@ def verify_otp(req: VerifyOtpRequest, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=429, detail="Nhập sai quá nhiều lần. Vui lòng yêu cầu mã mới."
         )
-    if user.verification_code_expires_at and datetime.utcnow() > user.verification_code_expires_at:
+    if user.verification_code_expires_at and utcnow() > user.verification_code_expires_at:
         raise invalid
 
     if not verify_otp_hash(user.verification_code, email, req.code):
@@ -225,7 +236,7 @@ def verify_otp(req: VerifyOtpRequest, db: Session = Depends(get_db)):
     return _auth_success(user, "Xác thực tài khoản thành công!")
 
 
-@router.post("/resend-otp", response_model=AuthResultResponse)
+@router.post("/resend-otp", response_model=AuthResultResponse, dependencies=limited)
 def resend_otp(req: ResendOtpRequest, db: Session = Depends(get_db)):
     email = _clean_email(req.email)
     generic = "Nếu tài khoản tồn tại và chưa xác thực, mã mới đã được gửi."
@@ -235,11 +246,11 @@ def resend_otp(req: ResendOtpRequest, db: Session = Depends(get_db)):
 
     _enforce_resend_cooldown(user)
     code = _issue_otp(db, user)
-    send_verification_email(email, code)
+    _deliver_otp(email, code)
     return _otp_response(email, code, generic)
 
 
-@router.post("/login", response_model=AuthResultResponse)
+@router.post("/login", response_model=AuthResultResponse, dependencies=limited)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     email = (req.email or "").strip().lower()
     user = db.query(User).filter(User.email == email).first()
@@ -253,7 +264,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         elapsed = _seconds_since_otp_sent(user)
         if elapsed is None or elapsed >= settings.otp_resend_cooldown_seconds:
             code = _issue_otp(db, user)
-            send_verification_email(email, code)
+            _deliver_otp(email, code)
             return _otp_response(email, code, "Tài khoản chưa xác thực. Vui lòng nhập mã OTP.")
         return _otp_response(email, None, "Mã OTP đã được gửi gần đây, vui lòng kiểm tra email.")
 
@@ -263,7 +274,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 # ===========================================================================
 # Demo (mỗi lần bấm = 1 user tạm thời riêng, KHÔNG dùng chung dữ liệu)
 # ===========================================================================
-@router.post("/demo", response_model=AuthResultResponse)
+@router.post("/demo", response_model=AuthResultResponse, dependencies=limited)
 def demo_login(db: Session = Depends(get_db)):
     if not settings.demo_enabled:
         raise HTTPException(status_code=404, detail="Not found")
@@ -332,7 +343,7 @@ def _exchange_google_code(code: str, redirect_uri: Optional[str]) -> str:
                 "code": code,
                 "client_id": settings.google_oauth_client_id,
                 "client_secret": settings.google_oauth_client_secret,
-                "redirect_uri": redirect_uri or "http://localhost:5173",
+                "redirect_uri": redirect_uri or settings.public_app_url,
                 "grant_type": "authorization_code",
             }
         ).encode("utf-8"),
@@ -345,10 +356,11 @@ def _exchange_google_code(code: str, redirect_uri: Optional[str]) -> str:
 
 @router.get("/google/config")
 def get_google_config():
-    return {"client_id": settings.google_oauth_client_id}
+    """Frontend lấy client_id từ đây (1 nguồn cấu hình duy nhất ở backend)."""
+    return {"client_id": settings.google_oauth_client_id or None}
 
 
-@router.post("/google", response_model=AuthResultResponse)
+@router.post("/google", response_model=AuthResultResponse, dependencies=limited)
 def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
     client_id = settings.google_oauth_client_id
     if not client_id:

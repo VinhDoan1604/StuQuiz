@@ -9,6 +9,7 @@ Cô lập dữ liệu:
 - payload có thêm owner_id (phòng thủ nhiều lớp / phục vụ dọn dẹp, audit).
 """
 import logging
+import threading
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -17,8 +18,8 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     FilterSelector,
-    FusionQuery,
     Fusion,
+    FusionQuery,
     MatchAny,
     MatchValue,
     PayloadSchemaType,
@@ -37,16 +38,19 @@ COLLECTION_NAME = "studyrag_chunks"
 DENSE_DIM = 1024  # BGE-M3
 UPSERT_BATCH = 128
 
-client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+# QdrantClient không mở kết nối lúc khởi tạo => an toàn khi import.
+client = QdrantClient(
+    url=settings.qdrant_url,
+    api_key=settings.qdrant_api_key or None,
+    timeout=settings.qdrant_timeout_seconds,
+)
 
-_indexes_ready = False
+_collection_ready = False
+_collection_lock = threading.Lock()
 
 
 def _ensure_payload_indexes() -> None:
     """Index keyword cho các field dùng để lọc (nhanh + bắt buộc ở Qdrant Cloud)."""
-    global _indexes_ready
-    if _indexes_ready:
-        return
     for field in ("doc_id", "owner_id"):
         try:
             client.create_payload_index(
@@ -56,18 +60,35 @@ def _ensure_payload_indexes() -> None:
             )
         except Exception as exc:  # đã tồn tại / phiên bản không hỗ trợ -> bỏ qua
             logger.debug("create_payload_index(%s): %s", field, exc)
-    _indexes_ready = True
 
 
 def ensure_collection() -> None:
-    if not client.collection_exists(COLLECTION_NAME):
-        logger.info("Tạo mới collection Qdrant: %s", COLLECTION_NAME)
-        client.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config={"dense": VectorParams(size=DENSE_DIM, distance=Distance.COSINE)},
-            sparse_vectors_config={"sparse": SparseVectorParams()},
-        )
-    _ensure_payload_indexes()
+    """Tạo collection + payload index nếu chưa có. Chỉ kiểm tra qua mạng 1 lần mỗi tiến trình."""
+    global _collection_ready
+    if _collection_ready:
+        return
+    with _collection_lock:
+        if _collection_ready:
+            return
+        if not client.collection_exists(COLLECTION_NAME):
+            logger.info("Tạo mới collection Qdrant: %s", COLLECTION_NAME)
+            client.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config={"dense": VectorParams(size=DENSE_DIM, distance=Distance.COSINE)},
+                sparse_vectors_config={"sparse": SparseVectorParams()},
+            )
+        _ensure_payload_indexes()
+        _collection_ready = True
+
+
+def ping() -> bool:
+    """Readiness probe: Qdrant có phản hồi không."""
+    try:
+        client.get_collections()
+        return True
+    except Exception as exc:
+        logger.warning("Qdrant không phản hồi: %s", exc)
+        return False
 
 
 def upsert_chunks(chunks: list, vectors: list, owner_id: str | None = None) -> None:

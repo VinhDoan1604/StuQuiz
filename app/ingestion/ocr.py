@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from dataclasses import dataclass
 
 from PIL import Image, ImageOps
@@ -85,7 +86,7 @@ def _preprocess(image: Image.Image) -> Image.Image:
     return Image.fromarray(arr)
 
 
-def ocr_page_image(image_bytes: bytes, lang: str = "vie") -> OCRResult:
+def ocr_page_image(image_bytes: bytes, lang: str = "vie", min_word_confidence: float = 0.0) -> OCRResult:
     """
     Chạy OCR trên ảnh của một trang.
 
@@ -94,6 +95,10 @@ def ocr_page_image(image_bytes: bytes, lang: str = "vie") -> OCRResult:
             từ trang PDF bởi `parsers.py`, nhưng cũng nhận ảnh upload trực tiếp.
         lang: mã ngôn ngữ tesseract. Mặc định "vie". Dùng "vie+eng" cho tài
             liệu song ngữ nếu traineddata tương ứng đã được cài.
+        min_word_confidence: chỉ giữ trong `text` các từ có confidence >= ngưỡng này và
+            có ít nhất 1 chữ/số (bỏ ký tự rác từ đường kẻ, lưới ô). Mặc định 0 = giữ hết
+            (trang scan); dùng ~70 cho hình trong slide (sơ đồ, biểu đồ).
+            `confidence` vẫn tính trên mọi từ để `low_confidence` giữ nguyên ý nghĩa.
 
     Returns:
         OCRResult chứa text nhận diện được, confidence trung bình (0-100),
@@ -148,7 +153,12 @@ def ocr_page_image(image_bytes: bytes, lang: str = "vie") -> OCRResult:
         words.append(text)
         confidences.append(conf_f)
 
-    full_text = " ".join(words)
+    if min_word_confidence > 0:
+        full_text = " ".join(
+            w for w, c in zip(words, confidences) if c >= min_word_confidence and re.search(r"\w", w)
+        )
+    else:
+        full_text = " ".join(words)
     avg_confidence = round(sum(confidences) / len(confidences), 2) if confidences else 0.0
 
     if not words:

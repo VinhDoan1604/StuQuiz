@@ -17,13 +17,15 @@ import argparse
 import asyncio
 import json
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.config import settings
 from eval.dataset import EvalItem, load_dataset
-from eval.metrics import evidence_match, normalize_text, retrieval_metrics
+from eval.metrics import evidence_match, normalize_text, retrieval_metrics, split_alternatives
 from eval.pipelines import ALL_CONFIGS, FINAL_TOP_K, GRAPH_CONFIGS, RETRIEVAL_CONFIGS, build_graphs, run_pipeline, warmup
 from eval.report import build_report
 
@@ -44,11 +46,13 @@ async def preflight_evidence(items: list[EvalItem], doc_ids: list[str], allow_or
     if not chunks:
         raise SystemExit("Index rỗng cho các doc_id trong manifest — chạy `python -m eval.ingest_corpus` trước.")
     norm = [normalize_text(c["text"]) for c in chunks]
+    # Kiểm tra TỪNG phương án của "A || B" để bắt lỗi gõ sai ở phương án phụ.
     orphans = [
-        (it.id, ev[:70])
+        (it.id, alt[:70])
         for it in items
         for ev in it.gold_evidence
-        if not any(evidence_match(t, ev, normalized=True) for t in norm)
+        for alt in split_alternatives(ev)
+        if not any(evidence_match(t, alt, normalized=True) for t in norm)
     ]
     if orphans:
         msg = "gold_evidence không khớp chunk nào (hãy rút ngắn/sửa cho đúng nguyên văn):\n" + "\n".join(
@@ -58,6 +62,32 @@ async def preflight_evidence(items: list[EvalItem], doc_ids: list[str], allow_or
             raise SystemExit(msg + "\n(Dùng --allow-orphans để bỏ qua — không khuyến khích.)")
         print("[cảnh báo] " + msg)
     print(f"[preflight] {len(items)} câu / {len(chunks)} chunks: OK")
+
+
+def _take_limit(items: list[EvalItem], limit: int) -> list[EvalItem]:
+    """Lấy `limit` câu nhưng giữ tỉ lệ câu không có đáp án (ít nhất 1 nếu dataset có),
+    để chạy smoke vẫn kiểm tra được đường từ chối. Giữ thứ tự gốc của dataset."""
+    if limit >= len(items):
+        return items
+    ans = [i for i in items if i.answerable]
+    unans = [i for i in items if not i.answerable]
+    n_un = min(len(unans), max(1, round(limit * len(unans) / len(items)))) if unans else 0
+    n_un = min(n_un, limit)
+    chosen = {i.id for i in ans[: limit - n_un] + unans[:n_un]}
+    return [i for i in items if i.id in chosen]
+
+
+def _keep_awake() -> None:
+    """Windows: chặn máy ngủ trong lúc chạy (latency sẽ sai hoàn toàn nếu máy ngủ
+    giữa 1 câu). Tự hết hiệu lực khi process kết thúc."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        except Exception as exc:  # không chặn được thì vẫn chạy
+            print(f"[cảnh báo] không chặn được chế độ ngủ: {exc}")
 
 
 def _load_latest(raw_path: Path) -> dict[tuple[str, str], dict]:
@@ -71,9 +101,11 @@ def _load_latest(raw_path: Path) -> dict[tuple[str, str], dict]:
 
 
 def _is_done(rec: dict | None, retrieval_only: bool) -> bool:
+    """Pipeline đã chạy xong cho bản ghi này chưa. Bản ghi chỉ lỗi JUDGE mà có đủ context
+    (chunks_full) coi như xong — được chấm lại bằng rejudge_pending, không sinh lại câu trả lời."""
     if rec is None or rec.get("error"):
         return False
-    return retrieval_only or not rec.get("judge_error")
+    return retrieval_only or not rec.get("judge_error") or bool(rec.get("chunks_full"))
 
 
 async def judge_record(llm, item: EvalItem, res, rec: dict) -> None:
@@ -94,6 +126,22 @@ async def judge_record(llm, item: EvalItem, res, rec: dict) -> None:
         rec["judge_error"] = str(exc)
 
 
+async def rejudge_pending(judge_llm, items_by_id: dict[str, EvalItem], latest: dict, raw_path: Path, configs: list[str]) -> int:
+    """Chấm lại các bản ghi chỉ lỗi judge, dùng câu trả lời + context đã lưu. Trả về số còn lỗi."""
+    pending = [
+        r for (c, q), r in latest.items()
+        if c in configs and q in items_by_id and not r.get("error") and r.get("judge_error") and r.get("chunks_full")
+    ]
+    for rec in pending:
+        res = SimpleNamespace(answer=rec["answer"], chunks=rec["chunks"])
+        await judge_record(judge_llm, items_by_id[rec["qid"]], res, rec)
+        with raw_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        status = "OK" if not rec.get("judge_error") else "vẫn lỗi"
+        print(f"[chấm lại] {rec['config']} {rec['qid']}: {status}")
+    return sum(1 for r in pending if r.get("judge_error"))
+
+
 async def main_async(args) -> None:
     configs = args.configs or (list(RETRIEVAL_CONFIGS) if args.retrieval_only else list(ALL_CONFIGS))
     if args.retrieval_only and any(c in GRAPH_CONFIGS for c in configs):
@@ -102,8 +150,14 @@ async def main_async(args) -> None:
         print("[lưu ý] Baseline được lấy là cấu hình đầu tiên; khuyến nghị đặt 'dense' đầu.")
 
     items = load_dataset(args.dataset, include_unreviewed=args.include_unreviewed)
+    if args.qids:
+        wanted = set(args.qids)
+        missing = wanted - {i.id for i in items}
+        if missing:
+            raise SystemExit(f"Không có trong dataset: {', '.join(sorted(missing))}")
+        items = [i for i in items if i.id in wanted]
     if args.limit:
-        items = items[: args.limit]
+        items = _take_limit(items, args.limit)
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     doc_ids = [d["doc_id"] for d in manifest["documents"]]
     await preflight_evidence(items, doc_ids, args.allow_orphans)
@@ -141,8 +195,12 @@ async def main_async(args) -> None:
 
     latest = _load_latest(raw_path)
     graphs = build_graphs(configs)
-    print("[warmup] nạp model embedding/reranker…")
-    await warmup(doc_ids)
+    _keep_awake()
+    print("[warmup] nạp model embedding/reranker" + ("" if args.retrieval_only else " + LLM") + "…")
+    await warmup(doc_ids, with_llm=not args.retrieval_only)
+    items_by_id = {i.id: i for i in items}
+    if judge_llm:
+        await rejudge_pending(judge_llm, items_by_id, latest, raw_path, configs)
 
     for config in configs:
         for n, item in enumerate(items, start=1):
@@ -152,8 +210,14 @@ async def main_async(args) -> None:
             rec = {
                 "config": config, "qid": item.id, "question": item.question, "answerable": item.answerable,
                 "answer": res.answer,
-                "chunks": [{"source_file": c.get("source_file"), "page": c.get("page"), "text": c.get("text", "")[:600]} for c in res.chunks],
-                "retrieval": retrieval_metrics(res.chunks, item.gold_evidence) if item.answerable and not res.error else None,
+                # Lưu ĐỦ context (không cắt) để có thể chấm lại judge mà không sinh lại câu trả lời.
+                "chunks": [{"source_file": c.get("source_file"), "page": c.get("page"), "section": c.get("section"),
+                            "text": c.get("text", "")} for c in res.chunks],
+                "chunks_full": True,
+                # Chấm trên chunk con (cùng đơn vị cho mọi cấu hình); context_retrieval = bằng chứng
+                # có nằm trong context thật gửi LLM không (parent mở rộng sẽ cao hơn — không so trực tiếp).
+                "retrieval": retrieval_metrics(res.child_chunks, item.gold_evidence) if item.answerable and not res.error else None,
+                "context_retrieval": retrieval_metrics(res.chunks, item.gold_evidence) if item.answerable and not res.error else None,
                 "latency_s": res.latency_s, "llm_calls": res.llm_calls, "tokens": res.tokens,
                 "loops": res.loops, "rewritten_queries": res.rewritten_queries, "error": res.error,
                 "faithfulness": None, "abstained": None, "correctness": None, "judge_error": None,
@@ -166,6 +230,15 @@ async def main_async(args) -> None:
             latest[(config, item.id)] = rec
             flag = f"LỖI: {res.error[:60]}" if res.error else f"{res.latency_s:.1f}s"
             print(f"[{config}] {n}/{len(items)} {item.id} {flag}")
+
+    if judge_llm:
+        left = sum(1 for (c, q), r in latest.items() if c in configs and q in items_by_id and r.get("judge_error"))
+        if left:
+            print(f"[chấm lại] {left} bản ghi lỗi judge — chờ 120s rồi chấm lại…")
+            await asyncio.sleep(120)
+            left = await rejudge_pending(judge_llm, items_by_id, latest, raw_path, configs)
+        if left:
+            print(f"[cảnh báo] còn {left} bản ghi lỗi judge — chạy lại đúng lệnh này (cùng --run-id) để chấm lại.")
 
     records: dict[str, dict[str, dict]] = {c: {} for c in configs}
     for (c, q), r in latest.items():
@@ -187,6 +260,7 @@ def main() -> None:
     ap.add_argument("--out", default="eval/results")
     ap.add_argument("--run-id")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--qids", nargs="+", help="Chỉ chạy các câu này (vd: --qids q057 q061 q065)")
     ap.add_argument("--retrieval-only", action="store_true")
     ap.add_argument("--include-unreviewed", action="store_true")
     ap.add_argument("--allow-orphans", action="store_true")

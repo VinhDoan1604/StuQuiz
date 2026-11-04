@@ -1,29 +1,53 @@
 """Fixture dùng chung: app FastAPI + SQLite in-memory + tạo user nhanh."""
 import os
 
-os.environ.setdefault("APP_ENV", "dev")
-os.environ.setdefault("POSTGRES_PORT", "1")  # fail nhanh -> fallback SQLite khi import app.db.session
+# Phải đặt TRƯỚC khi import app: dùng SQLite tạm, không đụng tới DB/Qdrant thật.
+os.environ["APP_ENV"] = "dev"
+os.environ["DATABASE_URL"] = "sqlite://"
+os.environ["JWT_SECRET"] = "test-only-secret-key-at-least-32-bytes-long"
+os.environ.setdefault("QDRANT_URL", "http://127.0.0.1:1")
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
 
-import app.models.db_models as m
-from app.core.security import create_token, hash_password
-from app.db.session import Base, get_db
-from app.main import app
+import app.models.db_models as m  # noqa: E402
+from app.core.rate_limit import auth_limiter, chat_limiter  # noqa: E402
+from app.core.security import create_token, hash_password  # noqa: E402
+from app.db.session import Base, get_db  # noqa: E402
+from app.main import app  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    auth_limiter.reset()
+    chat_limiter.reset()
+    yield
 
 
 @pytest.fixture()
-def client():
+def session_factory():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine, autoflush=False)
+    yield sessionmaker(bind=engine, autoflush=False)
+    engine.dispose()
 
+
+@pytest.fixture()
+def db_session(session_factory):
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture()
+def client(session_factory):
     def override():
-        db = Session()
+        db = session_factory()
         try:
             yield db
         finally:
@@ -31,7 +55,7 @@ def client():
 
     app.dependency_overrides[get_db] = override
     c = TestClient(app)
-    c.Session = Session
+    c.Session = session_factory
     yield c
     app.dependency_overrides.clear()
 

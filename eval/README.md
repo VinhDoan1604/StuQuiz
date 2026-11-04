@@ -53,9 +53,7 @@ Chạy bị ngắt/lỗi 429 → chạy lại cùng `--run-id`, chỉ các câu 
   (số LLM calls vẫn đúng).
 - Orchestrator bị bỏ qua (intent cố định `qa`) để chỉ đo chất lượng RAG.
 
-## Dọn dẹp bắt buộc
-- **Xoá `eval/ragas_eval.py`**, `eval/benchmark_results.json` (nếu có).
-- **Xoá bảng RAGAS trong `README.md`** (mục 4) cho tới khi dán số thật từ `report.md`.
-- `eval/quiz_eval.py` là stub `NotImplementedError`: xoá hoặc ghi rõ "chưa làm".
-- Thêm `eval/results/` và `eval/corpus/` vào `.gitignore`; commit riêng 1 `report.md` đại diện
-  vào `docs/` để người xem thấy kết quả.
+## Công bố kết quả
+- README chính không chứa số liệu cho tới khi có một lần chạy thật: commit riêng 1 `report.md`
+  đại diện vào thư mục tài liệu rồi dẫn link từ README.
+- `eval/results/` và `eval/corpus/` đã nằm trong `.gitignore`.

@@ -1,103 +1,89 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Header } from './components/Header';
 import { ChatView } from './components/ChatView';
 import { QuizView } from './components/QuizView';
 import { AuthScreen } from './components/AuthScreen';
 import { CollectionsDashboard } from './components/CollectionsDashboard';
-import { 
-  fetchDocuments, 
-  fetchSpaces, 
-  attachDocumentToSpace, 
+import {
+  attachDocumentToSpace,
+  clearSession,
   detachDocumentFromSpace,
-  type DocumentItem, 
-  type StudySpaceItem, 
-  type UserProfile 
+  fetchDocuments,
+  fetchSpaces,
+  getStoredUser,
+  saveSession,
+  type DocumentItem,
+  type StudySpaceItem,
+  type UserProfile,
 } from './services/api';
 
 export function App() {
-  // Authentication State
-  const [user, setUser] = useState<UserProfile | null>(() => {
-    try {
-      const saved = localStorage.getItem('study_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [, setToken] = useState<string | null>(() => {
-    return localStorage.getItem('study_token') || null;
-  });
+  const [user, setUser] = useState<UserProfile | null>(getStoredUser);
 
-  // Study Spaces & Documents State
+  // Study Spaces & Documents
   const [spaces, setSpaces] = useState<StudySpaceItem[]>([]);
-  const [activeSpace, setActiveSpace] = useState<StudySpaceItem | null>(null);
+  const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoadingDocs, setIsLoadingDocs] = useState(false);
 
-  // Tab inside an active notebook (only Chat or Quiz)
+  // Tab bên trong một không gian
   const [activeTab, setActiveTab] = useState<'chat' | 'quiz'>('chat');
 
-  const loadDocuments = async (userId?: string) => {
+  // Luôn suy ra từ danh sách mới nhất => không bao giờ lệch dữ liệu sau khi refresh
+  const activeSpace = spaces.find((s) => s.id === activeSpaceId) ?? null;
+
+  const loadDocuments = useCallback(async () => {
     setIsLoadingDocs(true);
     try {
-      const uid = userId || user?.id;
-      const docs = await fetchDocuments(uid);
-      setDocuments(docs);
+      setDocuments(await fetchDocuments());
     } catch (e) {
-      console.warn('Failed to load documents:', e);
+      console.warn('Không tải được tài liệu:', e);
     } finally {
       setIsLoadingDocs(false);
     }
-  };
+  }, []);
 
-  const loadSpaces = async (userId?: string) => {
+  const loadSpaces = useCallback(async () => {
     try {
-      const spList = await fetchSpaces(userId || user?.id);
-      setSpaces(spList);
-      // Giữ activeSpace đồng bộ nếu đã chọn
-      if (activeSpace) {
-        const updated = spList.find(s => s.id === activeSpace.id);
-        if (updated) setActiveSpace(updated);
-      }
+      setSpaces(await fetchSpaces());
     } catch (e) {
-      console.warn('Failed to load study spaces:', e);
+      console.warn('Không tải được không gian học tập:', e);
     }
-  };
+  }, []);
 
-  useEffect(() => {
-    if (user) {
-      loadDocuments(user.id);
-      loadSpaces(user.id);
-    }
-  }, [user]);
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadDocuments(), loadSpaces()]);
+  }, [loadDocuments, loadSpaces]);
 
-  const handleLoginSuccess = (userProfile: UserProfile, authToken: string) => {
-    setUser(userProfile);
-    setToken(authToken);
-    localStorage.setItem('study_user', JSON.stringify(userProfile));
-    localStorage.setItem('study_token', authToken);
-    loadDocuments(userProfile.id);
-    loadSpaces(userProfile.id);
-  };
-
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
+    clearSession();
     setUser(null);
-    setToken(null);
-    setActiveSpace(null);
+    setActiveSpaceId(null);
     setSpaces([]);
     setDocuments([]);
-    localStorage.removeItem('study_user');
-    localStorage.removeItem('study_token');
+  }, []);
+
+  useEffect(() => {
+    if (user) refreshAll();
+  }, [user, refreshAll]);
+
+  useEffect(() => {
+    window.addEventListener('auth:expired', handleLogout);
+    return () => window.removeEventListener('auth:expired', handleLogout);
+  }, [handleLogout]);
+
+  const handleLoginSuccess = (userProfile: UserProfile, authToken: string) => {
+    saveSession(userProfile, authToken);
+    setUser(userProfile);
   };
 
   const handleAttachDoc = async (docId: string) => {
     if (!activeSpace) return;
     try {
       await attachDocumentToSpace(activeSpace.id, docId);
-      await loadSpaces();
-      await loadDocuments();
+      await refreshAll();
     } catch (e) {
-      console.error('Failed to attach document:', e);
+      console.error('Không gắn được tài liệu:', e);
     }
   };
 
@@ -105,82 +91,62 @@ export function App() {
     if (!activeSpace) return;
     try {
       await detachDocumentFromSpace(activeSpace.id, docId);
-      await loadSpaces();
-      await loadDocuments();
+      await refreshAll();
     } catch (e) {
-      console.error('Failed to detach document:', e);
+      console.error('Không gỡ được tài liệu:', e);
     }
   };
 
-  useEffect(() => {
-    const onExpired = () => handleLogout();
-    window.addEventListener('auth:expired', onExpired);
-    // Có user lưu sẵn nhưng mất token => đăng xuất sạch
-    if (user && !localStorage.getItem('study_token')) handleLogout();
-    return () => window.removeEventListener('auth:expired', onExpired);
-  }, []);
-
-  // 1. GIAO DIỆN BAN ĐẦU: ĐĂNG NHẬP (Nếu chưa đăng nhập)
   if (!user) {
     return <AuthScreen onSuccess={handleLoginSuccess} />;
   }
 
-  // Lọc danh sách tài liệu chỉ thuộc về Study Space đang chọn
-  const activeSpaceDocs = activeSpace && activeSpace.document_ids && activeSpace.document_ids.length > 0
-    ? documents.filter(d => activeSpace.document_ids.includes(d.id))
-    : documents;
+  // Chỉ các tài liệu thuộc không gian đang mở (không gian rỗng => danh sách rỗng)
+  const activeSpaceDocs = activeSpace
+    ? documents.filter((d) => activeSpace.document_ids.includes(d.id))
+    : [];
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-base)' }}>
-      {/* Header */}
-      <Header 
+      <Header
         activeSpace={activeSpace}
-        onBackToDashboard={() => setActiveSpace(null)}
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
+        onBackToDashboard={() => setActiveSpaceId(null)}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
         user={user}
         onLogout={handleLogout}
       />
 
-      {/* 2. ĐĂNG NHẬP XONG VÀO TRANG CHÍNH: HIỆN CÁC SỔ (Ô đầu là Tạo sổ) */}
       {!activeSpace ? (
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           <CollectionsDashboard
             spaces={spaces}
             onSelectSpace={(space) => {
-              setActiveSpace(space);
+              setSpaces((prev) => (prev.some((s) => s.id === space.id) ? prev : [space, ...prev]));
+              setActiveSpaceId(space.id);
               setActiveTab('chat');
             }}
-            onRefreshSpaces={() => loadSpaces(user?.id)}
-            user={user}
+            onRefreshSpaces={loadSpaces}
           />
         </main>
       ) : (
-        /* 3. BẤM VÀO SỔ MỚI RA KHUNG CHAT / QUIZ CỦA SỔ ĐÓ */
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {activeTab === 'chat' && (
-            <ChatView 
+            <ChatView
+              key={activeSpace.id}
               documents={activeSpaceDocs}
               allDocuments={documents}
               isLoadingDocs={isLoadingDocs}
-              onRefreshDocs={async () => {
-                await loadDocuments();
-                await loadSpaces(user?.id);
-              }}
+              onRefreshDocs={refreshAll}
               activeSpace={activeSpace}
               onAttachDoc={handleAttachDoc}
               onDetachDoc={handleDetachDoc}
-              user={user}
             />
           )}
 
           {activeTab === 'quiz' && (
             <div style={{ padding: '24px 28px', maxWidth: '1240px', margin: '0 auto', width: '100%' }}>
-              <QuizView 
-                documents={activeSpaceDocs} 
-                activeSpace={activeSpace}
-                user={user}
-              />
+              <QuizView key={activeSpace.id} documents={activeSpaceDocs} activeSpace={activeSpace} />
             </div>
           )}
         </main>

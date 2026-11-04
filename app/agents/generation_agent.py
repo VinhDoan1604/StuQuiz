@@ -15,8 +15,8 @@ hệt lần trước dù bị chấm rớt).
 
 Output: LUÔN ghi state["answer_draft"] + state["citations"] (ứng viên).
 KHÔNG ghi state["final_answer"] — việc "chấp nhận" bản draft này thành câu
-trả lời cuối cùng là quyết định của graph (app/graph/build_graph.py, Phase
-5) sau khi grade_answer() thông qua, đúng theo docstring gốc của stub.
+trả lời cuối cùng là quyết định của graph (app/graph/build_graph.py) sau khi
+grade_answer() thông qua.
 """
 from __future__ import annotations
 
@@ -24,10 +24,10 @@ import logging
 import re
 
 from app.agents.constants import ANSWER_ACCEPT_THRESHOLD
-from app.llm.utils import LLMCallError, acall_llm_text
-from app.retrieval.helpers import format_chunks_for_prompt
 from app.agents.state import GraphState
+from app.llm.utils import LLMCallError, acall_llm_text
 from app.retrieval.expansion import make_snippet
+from app.retrieval.helpers import format_chunks_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +36,13 @@ _QA_SYSTEM_PROMPT = """Bạn là trợ lý học tập và nghiên cứu học t
 QUY TẮC TRÌNH BÀY & ĐỊNH DẠNG (BẮT BUỘC):
 1. **Không viết thành một khối văn bản dài dồn cục**: Tuyệt đối không viết 1 đoạn văn dày đặc, khó đọc. Phải chia câu trả lời thành các mục phân cấp rõ ràng bằng Markdown.
 2. **In đậm từ khóa quan trọng**: BẮT BUỘC in đậm (`**thuật ngữ**`, **khái niệm then chốt**, **công thức**, **kết luận quan trọng**) để người học có thể đọc lướt (scan nhanh) nắm được ngay ý chính.
-3. **Cấu trúc câu trả lời gồm 3 phần rõ ràng**:
+3. **Cấu trúc câu trả lời gồm 3 phần rõ ràng** (tiêu đề dưới đây dành cho câu hỏi tiếng Việt; câu hỏi ngôn ngữ khác thì DỊCH tiêu đề sang ngôn ngữ đó):
    - `### 🎯 Trả lời trực tiếp`: 1-2 câu trả lời thẳng, cô đọng nhất vào trọng tâm câu hỏi.
    - `### 📌 Chi tiết & Cơ chế cốt lõi`: Dùng danh sách gạch đầu dòng (`- `) để phân tích từng luận điểm, mỗi gạch đầu dòng bắt đầu bằng từ khóa in đậm.
    - `### 💡 Điểm cần lưu ý / Ứng dụng`: Nêu ngoại lệ, lưu ý thực tế hoặc ví dụ ngắn gọn (nếu phù hợp).
 4. **Trích dẫn chính xác**: Mỗi ý lấy từ context nào, chèn số tương ứng ngay sau câu, ví dụ: "Thuật toán có độ phức tạp là **O(V log V + E)** [1]." CHỈ dùng số đã được cấp, không tự bịa số mới.
-5. **Trung thực tuyệt đối**: Nếu context không đủ để trả lời, phải nêu rõ ràng (ví dụ: "Tài liệu chưa cung cấp dữ kiện về..."), tuyệt đối không suy đoán hay bịa đặt ngoài tài liệu."""
+5. **Trung thực tuyệt đối**: Nếu context không đủ để trả lời, phải nêu rõ ràng (ví dụ: "Tài liệu chưa cung cấp dữ kiện về..."), tuyệt đối không suy đoán hay bịa đặt ngoài tài liệu.
+6. **Ngôn ngữ**: Trả lời bằng CÙNG ngôn ngữ với câu hỏi của người dùng (kể cả các tiêu đề mục), kể cả khi context viết bằng ngôn ngữ khác. Ví dụ câu hỏi tiếng Anh thì dùng `### 🎯 Direct answer`, `### 📌 Details & core mechanism`, `### 💡 Notes / Applications`."""
 
 _TEACHING_SYSTEM_PROMPT = """Bạn là giảng viên / gia sư AI StudyRAG, giảng giải kiến thức cho sinh viên theo phương pháp SCAFFOLDING (phân tầng sư phạm), CHỈ dựa vào context được cung cấp (mỗi đoạn có đánh số [1], [2], ...).
 
@@ -53,9 +54,32 @@ QUY TẮC TRÌNH BÀY & ĐỊNH DẠNG (BẮT BUỘC):
    - `### 2. 🔬 Bản chất & Nguyên lý hoạt động`: Phân tích sâu tại sao và cơ chế vận hành bên trong — giúp người học hiểu gốc rễ vấn đề.
    - `### 3. 📝 Ví dụ minh hoạ thực tế`: 1 ví dụ cụ thể kèm các bước suy luận / tính toán từng bước rõ ràng.
    - `### 4. 🤔 Câu hỏi suy ngẫm (Socratic Question)`: Kết thúc bằng ĐÚNG 1 câu hỏi gợi mở để sinh viên tự chiêm nghiệm, không tự trả lời ngay.
-4. **Trích dẫn**: Khi dùng thông tin từ context nào, chèn số tương ứng như [1]. Nếu tài liệu thiếu ý nào, phải nói rõ phần đó chưa được đề cập thay vì tự suy diễn."""
+4. **Trích dẫn**: Khi dùng thông tin từ context nào, chèn số tương ứng như [1]. Nếu tài liệu thiếu ý nào, phải nói rõ phần đó chưa được đề cập thay vì tự suy diễn.
+5. **Ngôn ngữ**: Giảng bằng CÙNG ngôn ngữ với câu hỏi của người dùng (kể cả các tiêu đề mục), kể cả khi context viết bằng ngôn ngữ khác."""
 
 _CITATION_PATTERN = re.compile(r"\[(\d+)\]")
+
+# Nhận diện câu hỏi tiếng Anh để ép ngôn ngữ trả lời: system prompt viết tiếng Việt nên
+# chỉ quy tắc trong system prompt là KHÔNG đủ (eval check-v4: chỉ 1/4 câu tiếng Anh được
+# trả lời đúng ngôn ngữ). Yêu cầu >=2 từ chức năng tiếng Anh để câu tiếng Việt gõ không dấu
+# không bị nhận nhầm.
+_VI_CHARS = set("ăâđêôơưàảãáạằẳẵắặầẩẫấậèẻẽéẹềểễếệìỉĩíịòỏõóọồổỗốộờởỡớợùủũúụừửữứựỳỷỹýỵ")
+_EN_FUNCTION_WORDS = {
+    "the", "is", "are", "was", "what", "how", "why", "which", "who", "when", "where", "does", "do",
+    "did", "of", "and", "in", "an", "to", "for", "with", "under", "between", "can", "should", "it",
+}
+_EN_ANSWER_DIRECTIVE = (
+    "\n\nIMPORTANT: The question is in English. Write the ENTIRE answer in English, including "
+    "every section heading (translate the headings) and every bullet point, even though the "
+    "context may be in Vietnamese."
+)
+
+
+def _is_english_question(text: str) -> bool:
+    t = (text or "").lower()
+    if any(ch in _VI_CHARS for ch in t):
+        return False
+    return sum(w in _EN_FUNCTION_WORDS for w in re.findall(r"[a-z]+", t)) >= 2
 
 _ERROR_FALLBACK_ANSWER = "Xin lỗi, hệ thống đang gặp sự cố khi tạo câu trả lời. Vui lòng thử lại sau ít phút."
 
@@ -100,10 +124,17 @@ def _build_qa_citations(chunks: list[dict], answer_text: str) -> list[dict]:
 def _build_teaching_citations(chunks: list[dict]) -> list[dict]:
     return [_citation(i, c) for i, c in enumerate(chunks, start=1)]
 
+
 async def run_generation(state: GraphState) -> GraphState:
     intent = state.get("intent", "qa")
     rewritten = state.get("rewritten_queries") or []
-    query = rewritten[-1] if rewritten else state.get("user_query", "")
+    user_query = state.get("user_query", "")
+    # Trả lời ĐÚNG câu người dùng hỏi. Bản viết lại (resolve đại từ / CRAG thêm từ khoá để
+    # tìm tài liệu) chỉ là gợi ý — dùng nó làm câu hỏi chính khiến câu trả lời lệch phạm vi
+    # và có thể đổi ngôn ngữ so với câu hỏi gốc.
+    query = user_query or (rewritten[-1] if rewritten else "")
+    if rewritten and user_query and rewritten[-1] != user_query:
+        query += f"\n(Câu hỏi đã được diễn giải lại để tìm tài liệu: {rewritten[-1]})"
     chunks = state.get("retrieved_chunks") or []
     context_block = format_chunks_for_prompt(chunks)
     feedback = _last_answer_feedback(state)
@@ -120,6 +151,8 @@ async def run_generation(state: GraphState) -> GraphState:
             f'người chấm: "{feedback}". Hãy viết lại, khắc phục ĐÚNG vấn đề này, bám sát context hơn.'
         )
         logger.info("run_generation: regenerate theo feedback='%s'", feedback[:100])
+    if _is_english_question(user_query):
+        user_prompt += _EN_ANSWER_DIRECTIVE  # đặt CUỐI prompt để model tuân theo chắc chắn
 
     try:
         answer_text = await acall_llm_text(task, system_prompt, user_prompt)

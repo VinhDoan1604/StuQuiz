@@ -1,22 +1,61 @@
 /**
  * frontend/src/services/api.ts
- * API client: gắn JWT vào mọi request cần đăng nhập; tự phát sự kiện
- * 'auth:expired' khi server trả 401 để App đăng xuất.
- *
- * Các hàm giữ NGUYÊN chữ ký cũ (tham số userId được bỏ qua — danh tính do
- * server lấy từ token), nên component hiện có không cần sửa.
+ * API client duy nhất của frontend:
+ * - Gắn JWT vào mọi request cần đăng nhập; server trả 401 => phát sự kiện
+ *   'auth:expired' để App đăng xuất.
+ * - Danh tính user do server lấy từ token — client KHÔNG gửi user_id.
+ * - Mặc định gọi `/api` (cùng origin: Vite proxy khi dev, nginx khi deploy).
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 const TOKEN_KEY = 'study_token';
+const USER_KEY = 'study_user';
 
+// ---------------------------------------------------------------------------
+// Session (localStorage)
+// ---------------------------------------------------------------------------
 export const getToken = (): string | null => localStorage.getItem(TOKEN_KEY);
 
-async function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+export function getStoredUser(): UserProfile | null {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    return raw && getToken() ? (JSON.parse(raw) as UserProfile) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSession(user: UserProfile, token: string): void {
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearSession(): void {
+  localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+/** UUID v4 cho phiên chat mới (crypto.randomUUID chỉ có trong secure context). */
+export function newSessionId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+export const errorMessage = (err: unknown, fallback: string): string =>
+  err instanceof Error && err.message ? err.message : fallback;
+
+// ---------------------------------------------------------------------------
+// HTTP helpers
+// ---------------------------------------------------------------------------
+async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   const token = getToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  const res = await fetch(url, { ...init, headers });
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (res.status === 401) window.dispatchEvent(new Event('auth:expired'));
   return res;
 }
@@ -37,15 +76,21 @@ async function errorDetail(res: Response, fallback: string): Promise<string> {
   return fallback;
 }
 
+async function getJson<T>(path: string, fallback: string): Promise<T> {
+  const res = await authFetch(path);
+  if (!res.ok) throw new Error(await errorDetail(res, fallback));
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-export interface Citation { 
-  index?: number; 
-  file?: string; 
-  page?: number | null; 
-  section?: string; 
-  snippet?: string; 
+export interface Citation {
+  index?: number;
+  file?: string;
+  page?: number | null;
+  section?: string;
+  snippet?: string;
 }
 
 export interface ReflectionTrace {
@@ -55,14 +100,17 @@ export interface ReflectionTrace {
   answer_grade: number | null;
   answer_faithful: boolean | null;
   num_loops: number;
-  context_verified?: boolean | null; 
+  context_verified?: boolean | null;
   context_forced?: boolean | null;
-  answer_verified?: boolean | null;  
+  answer_verified?: boolean | null;
   answer_forced?: boolean | null;
 }
 
+export type Intent = 'qa' | 'teaching' | 'quiz' | 'summary';
+
 export interface ChatResponse {
-  intent: 'qa' | 'teaching' | 'quiz' | 'summary';
+  session_id?: string | null;
+  intent: Intent;
   answer: string;
   citations: Citation[];
   reflection: ReflectionTrace;
@@ -85,9 +133,11 @@ export interface AgentStepEvent {
   loop?: number;
   citations?: Citation[];
   response?: ChatResponse;
-  graded?: boolean; 
+  graded?: boolean;
   forced?: boolean;
 }
+
+export type DocumentStatus = 'processing' | 'ready' | 'failed';
 
 export interface DocumentItem {
   id: string;
@@ -96,24 +146,43 @@ export interface DocumentItem {
   subject?: string | null;
   num_chunks: number;
   uploaded_at: string | null;
-  status?: 'processing' | 'ready' | 'failed';
+  status?: DocumentStatus;
   error_message?: string | null;
 }
 
+export interface UploadResult {
+  document_id: string;
+  num_chunks: number;
+  status?: DocumentStatus;
+  filename?: string;
+  message?: string;
+}
+
 export interface QuizQuestion {
-  attempt_id: string; 
-  question: string; 
-  choices: string[]; 
+  attempt_id: string;
+  question: string;
+  choices: string[];
   topic: string;
   difficulty: 'easy' | 'medium' | 'hard';
 }
-export interface QuizAnswerResult { 
-  attempt_id: string; 
-  is_correct: boolean; 
-  correct_choice: string; 
-  explanation: string; 
+
+export interface QuizAnswerResult {
+  attempt_id: string;
+  is_correct: boolean;
+  correct_choice: string;
+  explanation: string;
 }
 
+export interface QuizHistoryItem {
+  id: string;
+  topic: string | null;
+  question: string;
+  choices: string[];
+  correct_choice: string;
+  user_choice: string | null;
+  is_correct: boolean | null;
+  created_at: string | null;
+}
 
 export interface MasteryTopic {
   topic: string;
@@ -152,57 +221,81 @@ export interface StudySpaceItem {
   created_at?: string | null;
 }
 
+export interface ChatTurnItem {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  intent: Intent | null;
+  reflection_trace: (ReflectionTrace & { citations?: Citation[] }) | null;
+  created_at: string | null;
+}
+
+export interface ChatSessionItem {
+  session_id: string;
+  title: string;
+  created_at: string | null;
+  turns_count: number;
+  turns: ChatTurnItem[];
+}
+
 // ---------------------------------------------------------------------------
 // 1. Chat & SSE
 // ---------------------------------------------------------------------------
-function chatBody(
-  sessionId: string,
-  message: string,
-  documentIds?: string[],
-  spaceId?: string
-) {
+/** Phạm vi tài liệu do server tự xác định từ space (hoặc toàn bộ tài liệu nếu không có space). */
+function chatBody(sessionId: string, message: string, spaceId?: string, documentIds?: string[], model?: string) {
   return {
     session_id: sessionId,
     message,
-    document_ids: documentIds && documentIds.length > 0 ? documentIds : undefined,
     space_id: spaceId || undefined,
+    document_ids: documentIds && documentIds.length > 0 ? documentIds : undefined,
+    model: model || undefined,
   };
 }
+
+/** Model user được chọn khi chat (cấu hình LLM_CHAT_MODELS ở backend). */
+export interface ChatModelItem {
+  id: string;        // "<provider>:<model>"
+  provider: string;
+  model: string;
+  label: string;
+}
+
+export const fetchChatModels = (): Promise<{ models: ChatModelItem[] }> =>
+  getJson('/chat/models', 'Không tải được danh sách model');
 
 export async function sendChatMessage(
   sessionId: string,
   message: string,
-  documentIds?: string[],
   spaceId?: string,
-  _userId?: string
+  documentIds?: string[],
+  model?: string
 ): Promise<ChatResponse> {
-  const res = await authFetch(
-    `${API_BASE}/chat`,
-    jsonInit('POST', chatBody(sessionId, message, documentIds, spaceId))
-  );
-  if (!res.ok) throw new Error(await errorDetail(res, `Chat error: ${res.statusText}`));
+  const res = await authFetch('/chat', jsonInit('POST', chatBody(sessionId, message, spaceId, documentIds, model)));
+  if (!res.ok) throw new Error(await errorDetail(res, `Lỗi chat: ${res.statusText}`));
   return res.json();
+}
+
+export interface StreamHandlers {
+  onStep: (event: AgentStepEvent) => void;
+  onDone: (response: ChatResponse) => void;
+  onError: (err: string) => void;
 }
 
 export async function streamChatMessage(
   sessionId: string,
   message: string,
-  onStep: (event: AgentStepEvent) => void,
-  onDone: (response: ChatResponse) => void,
-  onError: (err: string) => void,
-  documentIds?: string[],
+  { onStep, onDone, onError }: StreamHandlers,
   spaceId?: string,
-  _userId?: string
+  documentIds?: string[],
+  model?: string
 ): Promise<void> {
+  let finished = false;
   try {
-    const res = await authFetch(
-      `${API_BASE}/chat/stream`,
-      jsonInit('POST', chatBody(sessionId, message, documentIds, spaceId))
-    );
-    if (!res.ok) throw new Error(await errorDetail(res, `Stream connection failed: ${res.statusText}`));
+    const res = await authFetch('/chat/stream', jsonInit('POST', chatBody(sessionId, message, spaceId, documentIds, model)));
+    if (!res.ok) throw new Error(await errorDetail(res, `Không kết nối được luồng phản hồi: ${res.statusText}`));
 
     const reader = res.body?.getReader();
-    if (!reader) throw new Error('ReadableStream not supported by browser');
+    if (!reader) throw new Error('Trình duyệt không hỗ trợ ReadableStream');
 
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
@@ -218,77 +311,69 @@ export async function streamChatMessage(
       for (const block of blocks) {
         const trimmed = block.trim();
         if (!trimmed.startsWith('data: ')) continue;
+        let parsed: AgentStepEvent;
         try {
-          const parsed: AgentStepEvent = JSON.parse(trimmed.slice(6));
-          if (parsed.event === 'done' && parsed.response) onDone(parsed.response);
-          else if (parsed.event === 'error') onError(parsed.message || 'Stream server error');
-          else onStep(parsed);
+          parsed = JSON.parse(trimmed.slice(6));
         } catch (e) {
-          console.warn('Failed to parse SSE payload:', trimmed, e);
+          console.warn('Không parse được SSE payload:', trimmed, e);
+          continue;
+        }
+        if (parsed.event === 'done' && parsed.response) {
+          finished = true;
+          onDone(parsed.response);
+        } else if (parsed.event === 'error') {
+          finished = true;
+          onError(parsed.message || 'Máy chủ gặp lỗi khi xử lý.');
+        } else {
+          onStep(parsed);
         }
       }
     }
-  } catch (err: any) {
-    onError(err.message || 'Lỗi mạng khi kết nối stream');
+    if (!finished) onError('Kết nối bị ngắt trước khi nhận được câu trả lời.');
+  } catch (err) {
+    if (!finished) onError(errorMessage(err, 'Lỗi mạng khi kết nối luồng phản hồi'));
   }
 }
 
 // ---------------------------------------------------------------------------
 // 2. Documents
 // ---------------------------------------------------------------------------
-export async function fetchDocuments(_userId?: string): Promise<DocumentItem[]> {
-  try {
-    const res = await authFetch(`${API_BASE}/documents`);
-    if (!res.ok) return [];
-    return await res.json();
-  } catch (err) {
-    console.warn('fetchDocuments error:', err);
-    return [];
-  }
-}
+export const fetchDocuments = (): Promise<DocumentItem[]> =>
+  getJson('/documents', 'Không tải được danh sách tài liệu');
 
-export async function uploadDocument(
-  file: File,
-  _userId?: string
-): Promise<{ document_id: string; num_chunks: number; status?: string; filename?: string; message?: string }> {
+export async function uploadDocument(file: File): Promise<UploadResult> {
   const formData = new FormData();
   formData.append('file', file);
-
-  const res = await authFetch(`${API_BASE}/documents/upload`, { method: 'POST', body: formData });
+  const res = await authFetch('/documents/upload', { method: 'POST', body: formData });
   if (!res.ok) throw new Error(await errorDetail(res, 'Tải tệp lên thất bại'));
   return res.json();
 }
 
-export async function fetchDocumentStatus(documentId: string): Promise<{
-  id: string;
-  filename: string;
-  status: 'processing' | 'ready' | 'failed';
-  num_chunks: number;
-  error?: string | null;
-}> {
-  const res = await authFetch(`${API_BASE}/documents/${documentId}/status`);
-  if (!res.ok) throw new Error('Không thể kiểm tra trạng thái tài liệu');
-  return res.json();
-}
-
-export async function deleteDocument(documentId: string, _userId?: string): Promise<void> {
-  const res = await authFetch(`${API_BASE}/documents/${documentId}`, { method: 'DELETE' });
+export async function deleteDocument(documentId: string): Promise<void> {
+  const res = await authFetch(`/documents/${documentId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await errorDetail(res, 'Xóa tài liệu thất bại'));
 }
 
 // ---------------------------------------------------------------------------
 // 3. Quiz & Mastery
 // ---------------------------------------------------------------------------
-export async function generateQuiz(
-  documentIds: string[],
-  numQuestions: number = 5,
-  prioritizeWeakTopics: boolean = true,
-  _userId: string = '',
-  topicPrompt?: string,
-  spaceId?: string
-): Promise<QuizQuestion[]> {
+export interface GenerateQuizOptions {
+  documentIds: string[];
+  numQuestions?: number;
+  prioritizeWeakTopics?: boolean;
+  topicPrompt?: string;
+  spaceId?: string;
+}
+
+export async function generateQuiz({
+  documentIds,
+  numQuestions = 5,
+  prioritizeWeakTopics = true,
+  topicPrompt,
+  spaceId,
+}: GenerateQuizOptions): Promise<QuizQuestion[]> {
   const res = await authFetch(
-    `${API_BASE}/quiz/generate`,
+    '/quiz/generate',
     jsonInit('POST', {
       document_ids: documentIds,
       num_questions: numQuestions,
@@ -297,39 +382,24 @@ export async function generateQuiz(
       space_id: spaceId || undefined,
     })
   );
-  if (!res.ok) throw new Error(await errorDetail(res, `Quiz generate error: ${res.statusText}`));
+  if (!res.ok) throw new Error(await errorDetail(res, `Không sinh được đề: ${res.statusText}`));
   return res.json();
 }
 
-export async function fetchWeakTopics(_userId?: string): Promise<MasteryTopic[]> {
-  try {
-    const res = await authFetch(`${API_BASE}/mastery/weak-topics`);
-    return res.ok ? await res.json() : [];
-  } catch (err) {
-    console.warn('fetchWeakTopics error:', err);
-    return [];
-  }
-}
-
-export async function fetchAllMastery(_userId?: string): Promise<MasteryTopic[]> {
-  try {
-    const res = await authFetch(`${API_BASE}/mastery/all`);
-    return res.ok ? await res.json() : [];
-  } catch (err) {
-    console.warn('fetchAllMastery error:', err);
-    return [];
-  }
-}
-
 export async function answerQuiz(attemptId: string, choice: string): Promise<QuizAnswerResult> {
-  const res = await authFetch(`${API_BASE}/quiz/answer`, jsonInit('POST', { attempt_id: attemptId, choice }));
+  const res = await authFetch('/quiz/answer', jsonInit('POST', { attempt_id: attemptId, choice }));
   if (!res.ok) throw new Error(await errorDetail(res, 'Không ghi nhận được câu trả lời'));
   return res.json();
 }
 
+export const fetchWeakTopics = (): Promise<MasteryTopic[]> =>
+  getJson('/mastery/weak-topics', 'Không tải được chủ đề cần ôn');
+
+export const fetchAllMastery = (): Promise<MasteryTopic[]> =>
+  getJson('/mastery/all', 'Không tải được tiến độ học tập');
+
 // ---------------------------------------------------------------------------
-// 4. Authentication (endpoint đăng nhập dùng fetch thường: 401 ở đây KHÔNG được
-//    kích hoạt đăng xuất toàn cục)
+// 4. Authentication (fetch thường: 401 ở đây KHÔNG kích hoạt đăng xuất toàn cục)
 // ---------------------------------------------------------------------------
 async function authPost(path: string, body?: unknown, fallback = 'Yêu cầu thất bại'): Promise<AuthResult> {
   const res = await fetch(`${API_BASE}${path}`, jsonInit('POST', body));
@@ -351,43 +421,45 @@ export const resendOtp = (email: string) =>
 
 export const demoLogin = () => authPost('/auth/demo', undefined, 'Không thể vào chế độ dùng thử');
 
-export const googleAuth = (data: {
-  credential?: string;
-  access_token?: string;
-  code?: string;
-  redirect_uri?: string;
-}) => authPost('/auth/google', data, 'Đăng nhập bằng Google thất bại');
+export const googleAuth = (data: { credential?: string; access_token?: string; code?: string; redirect_uri?: string }) =>
+  authPost('/auth/google', data, 'Đăng nhập bằng Google thất bại');
+
+/**
+ * Client ID Google OAuth do backend cấu hình: trả `null` nếu máy chủ CHƯA bật Google;
+ * ném lỗi nếu không kết nối được máy chủ (để UI không báo nhầm là "chưa bật").
+ */
+export async function fetchGoogleClientId(): Promise<string | null> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/auth/google/config`);
+  } catch {
+    throw new Error('Không kết nối được máy chủ. Vui lòng kiểm tra backend đang chạy rồi thử lại.');
+  }
+  if (!res.ok) throw new Error(`Máy chủ không phản hồi (HTTP ${res.status}). Vui lòng thử lại sau.`);
+  const data: { client_id?: string | null } = await res.json();
+  return data.client_id || null;
+}
 
 export async function logoutUser(): Promise<void> {
   try {
-    await authFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+    await authFetch('/auth/logout', { method: 'POST' });
   } catch {
     /* ignore */
   }
 }
 
-export async function fetchCurrentUser(_userId?: string): Promise<UserProfile> {
-  const res = await authFetch(`${API_BASE}/auth/me`);
-  if (!res.ok) throw new Error('Không thể lấy thông tin người dùng');
-  return res.json();
-}
+export const fetchCurrentUser = (): Promise<UserProfile> =>
+  getJson('/auth/me', 'Không thể lấy thông tin người dùng');
 
 // ---------------------------------------------------------------------------
 // 5. Study Spaces
 // ---------------------------------------------------------------------------
-export async function fetchSpaces(_userId?: string): Promise<StudySpaceItem[]> {
-  try {
-    const res = await authFetch(`${API_BASE}/spaces`);
-    return res.ok ? await res.json() : [];
-  } catch (err) {
-    console.warn('fetchSpaces error:', err);
-    return [];
-  }
-}
+export const fetchSpaces = (): Promise<StudySpaceItem[]> =>
+  getJson('/spaces', 'Không tải được danh sách không gian học tập');
 
-export async function createSpace(title: string, description?: string, _userId?: string): Promise<StudySpaceItem> {
-  const res = await authFetch(`${API_BASE}/spaces`, jsonInit('POST', { title, description }));
-  if (!res.ok) throw new Error(await errorDetail(res, 'Không thể tạo bộ học tập mới'));
+export async function createSpace(title: string, description?: string): Promise<StudySpaceItem> {
+  const res = await authFetch('/spaces', jsonInit('POST', { title, description }));
+  if (!res.ok) throw new Error(await errorDetail(res, 'Không thể tạo không gian học tập mới'));
   return res.json();
 }
 
@@ -395,50 +467,28 @@ export async function updateSpace(
   spaceId: string,
   updates: { title?: string; description?: string; icon?: string }
 ): Promise<StudySpaceItem> {
-  const res = await authFetch(`${API_BASE}/spaces/${spaceId}`, jsonInit('PATCH', updates));
-  if (!res.ok) throw new Error(await errorDetail(res, 'Không thể cập nhật bộ học tập'));
-  return res.json();
-}
-
-export async function getSpaceDetail(spaceId: string): Promise<any> {
-  const res = await authFetch(`${API_BASE}/spaces/${spaceId}`);
-  if (!res.ok) throw new Error('Không tìm thấy bộ học tập');
+  const res = await authFetch(`/spaces/${spaceId}`, jsonInit('PATCH', updates));
+  if (!res.ok) throw new Error(await errorDetail(res, 'Không thể cập nhật không gian học tập'));
   return res.json();
 }
 
 export async function attachDocumentToSpace(spaceId: string, documentId: string): Promise<void> {
-  const res = await authFetch(
-    `${API_BASE}/spaces/${spaceId}/documents`,
-    jsonInit('POST', { document_id: documentId })
-  );
+  const res = await authFetch(`/spaces/${spaceId}/documents`, jsonInit('POST', { document_id: documentId }));
   if (!res.ok) throw new Error(await errorDetail(res, 'Không thể gắn tài liệu'));
 }
 
 export async function detachDocumentFromSpace(spaceId: string, documentId: string): Promise<void> {
-  await authFetch(`${API_BASE}/spaces/${spaceId}/documents/${documentId}`, { method: 'DELETE' });
+  const res = await authFetch(`/spaces/${spaceId}/documents/${documentId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await errorDetail(res, 'Không thể gỡ tài liệu'));
 }
 
 export async function deleteSpace(spaceId: string): Promise<void> {
-  const res = await authFetch(`${API_BASE}/spaces/${spaceId}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Không thể xóa bộ học tập');
+  const res = await authFetch(`/spaces/${spaceId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await errorDetail(res, 'Không thể xóa không gian học tập'));
 }
 
-export async function fetchSpaceChatHistory(spaceId: string): Promise<any[]> {
-  try {
-    const res = await authFetch(`${API_BASE}/spaces/${spaceId}/chat-history`);
-    return res.ok ? await res.json() : [];
-  } catch (err) {
-    console.warn('fetchSpaceChatHistory error:', err);
-    return [];
-  }
-}
+export const fetchSpaceChatHistory = (spaceId: string): Promise<ChatSessionItem[]> =>
+  getJson(`/spaces/${spaceId}/chat-history`, 'Không tải được lịch sử chat');
 
-export async function fetchSpaceQuizHistory(spaceId: string): Promise<any[]> {
-  try {
-    const res = await authFetch(`${API_BASE}/spaces/${spaceId}/quiz-history`);
-    return res.ok ? await res.json() : [];
-  } catch (err) {
-    console.warn('fetchSpaceQuizHistory error:', err);
-    return [];
-  }
-}
+export const fetchSpaceQuizHistory = (spaceId: string): Promise<QuizHistoryItem[]> =>
+  getJson(`/spaces/${spaceId}/quiz-history`, 'Không tải được lịch sử quiz');

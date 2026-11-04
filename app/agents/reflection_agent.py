@@ -42,10 +42,10 @@ import logging
 from pydantic import BaseModel, Field
 
 from app.agents.constants import ANSWER_ACCEPT_THRESHOLD, CONTEXT_SUFFICIENT_THRESHOLD
-from app.llm.utils import LLMCallError, acall_structured
-from app.retrieval.helpers import format_chunks_for_prompt
 from app.agents.state import GraphState, ReflectionResult
 from app.config import settings
+from app.llm.utils import LLMCallError, acall_structured
+from app.retrieval.helpers import format_chunks_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,6 @@ class AnswerGradeOutput(BaseModel):
 
 def _loops_exhausted(state: GraphState) -> bool:
     return state.get("num_reflection_loops", 0) >= settings.max_reflection_loops
-
 
 
 async def grade_context(state: GraphState) -> ReflectionResult:

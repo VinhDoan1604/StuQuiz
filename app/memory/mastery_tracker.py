@@ -19,13 +19,14 @@ Thuật toán mastery_score (0-100, khởi tạo mặc định 0):
 from __future__ import annotations
 
 import logging
-import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.db_models import MasteryRecord
 from app.models.schemas import MasteryTopic
+from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -46,26 +47,38 @@ def _next_interval_days(streak: int) -> int:
     return _SPACED_REPETITION_SCHEDULE_DAYS[index]
 
 
-def _get_or_create_record(db: Session, user_id: str, topic: str) -> MasteryRecord:
-    record = (
+def _find_record(db: Session, user_id: str, topic: str) -> MasteryRecord | None:
+    return (
         db.query(MasteryRecord)
         .filter(MasteryRecord.user_id == user_id, MasteryRecord.topic == topic)
         .first()
     )
-    if record is None:
-        record = MasteryRecord(
-            id=str(uuid.uuid4()),
-            user_id=user_id,
-            topic=topic,
-            correct_count=0,
-            incorrect_count=0,
-            streak=0,
-            mastery_score=DEFAULT_INITIAL_SCORE,
-            last_reviewed_at=None,
-            next_review_due_at=None,
-        )
-        db.add(record)
-    return record
+
+
+def _get_or_create_record(db: Session, user_id: str, topic: str) -> MasteryRecord:
+    record = _find_record(db, user_id, topic)
+    if record is not None:
+        return record
+    # Savepoint: 2 request đồng thời cùng tạo record cho 1 topic sẽ vấp
+    # uq_mastery_user_topic — bên thua đọc lại record bên thắng đã tạo,
+    # không làm hỏng transaction bên ngoài (đang giữ cập nhật QuizAttempt).
+    try:
+        with db.begin_nested():
+            record = MasteryRecord(
+                user_id=user_id,
+                topic=topic,
+                correct_count=0,
+                incorrect_count=0,
+                streak=0,
+                mastery_score=DEFAULT_INITIAL_SCORE,
+            )
+            db.add(record)
+        return record
+    except IntegrityError:
+        record = _find_record(db, user_id, topic)
+        if record is None:
+            raise
+        return record
 
 
 def record_quiz_result(db: Session, user_id: str, topic: str, is_correct: bool) -> None:
@@ -80,7 +93,7 @@ def record_quiz_result(db: Session, user_id: str, topic: str, is_correct: bool) 
         return
 
     record = _get_or_create_record(db, user_id, topic)
-    now = datetime.utcnow()
+    now = utcnow()
 
     if is_correct:
         record.correct_count = (record.correct_count or 0) + 1
@@ -112,7 +125,7 @@ def get_weak_topics(db: Session, user_id: str, limit: int = 5) -> list[MasteryTo
     (next_review_due_at <= now). Ưu tiên topic quá hạn ôn tập lâu nhất
     trước, sau đó mới tới điểm thấp nhất.
     """
-    now = datetime.utcnow()
+    now = utcnow()
 
     candidates = (
         db.query(MasteryRecord)

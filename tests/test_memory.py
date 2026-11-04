@@ -1,52 +1,12 @@
-import os
-import sys
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
+from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from unittest.mock import patch, MagicMock
-
-try:
-    import pytest
-    fixture_dec = pytest.fixture
-except ImportError:
-    pytest = None
-    def fixture_dec(fn):
-        return fn
-
-from app.db.session import Base
-from app.models.db_models import User, ChatSession, ChatTurn, MasteryRecord
+from app.memory.context_window import _covered_turn_count, build_context, maybe_summarize
+from app.memory.mastery_tracker import _get_or_create_record, _next_interval_days, get_weak_topics, record_quiz_result
+from app.models.db_models import ChatSession, ChatTurn, MasteryRecord
 from app.models.schemas import MasteryTopic
-from app.memory.mastery_tracker import (
-    record_quiz_result,
-    get_weak_topics,
-    _next_interval_days,
-    _get_or_create_record,
-    _SPACED_REPETITION_SCHEDULE_DAYS,
-)
-from app.memory.context_window import (
-    build_context,
-    maybe_summarize,
-    _covered_turn_count,
-    SLIDING_WINDOW_TURNS,
-    SUMMARIZE_TRIGGER_TURNS,
-)
-
-
-@fixture_dec
-def db_session():
-    """Tạo session SQLite in-memory để test hoàn toàn độc lập, không phụ thuộc vào Postgres bên ngoài."""
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine)
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    session = TestingSessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
+from app.utils.time import utcnow
 
 
 def test_next_interval_days():
@@ -150,7 +110,7 @@ def test_context_window_incremental(db_session):
             session_id=session_id,
             role="user" if i % 2 == 0 else "assistant",
             content=f"Message {i}",
-            created_at=datetime.utcnow() + timedelta(seconds=i),
+            created_at=utcnow() + timedelta(seconds=i),
         )
         db_session.add(turn)
     db_session.commit()
@@ -180,33 +140,10 @@ def test_context_window_incremental(db_session):
     assert "[Lịch sử gần đây]" in ctx
 
 
-if __name__ == "__main__":
-    print("--- Running tests for Mastery Tracker & Context Window ---")
-    test_next_interval_days()
-    print("[PASS] test_next_interval_days")
 
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine)
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-    session = TestingSessionLocal()
-    test_mastery_tracker_streak_and_spaced_repetition(session)
-    print("[PASS] test_mastery_tracker_streak_and_spaced_repetition")
-    session.close()
-
-    session = TestingSessionLocal()
-    test_mastery_tracker_clamping(session)
-    print("[PASS] test_mastery_tracker_clamping")
-    session.close()
-
-    session = TestingSessionLocal()
-    test_get_weak_topics(session)
-    print("[PASS] test_get_weak_topics")
-    session.close()
-
-    session = TestingSessionLocal()
-    test_context_window_incremental(session)
-    print("[PASS] test_context_window_incremental")
-    session.close()
-
-    print("\n=> ALL MEMORY TESTS PASSED 100%!")
+def test_mastery_record_unique_per_user_topic(db_session):
+    user_id = str(uuid.uuid4())
+    record_quiz_result(db_session, user_id, "Đồ thị", is_correct=True)
+    record_quiz_result(db_session, user_id, "Đồ thị", is_correct=False)
+    rows = db_session.query(MasteryRecord).filter(MasteryRecord.user_id == user_id).all()
+    assert len(rows) == 1 and rows[0].correct_count == 1 and rows[0].incorrect_count == 1

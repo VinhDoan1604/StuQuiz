@@ -1,14 +1,21 @@
-import React, { useState } from 'react';
-import { 
-  BookOpen, 
-  Loader2, 
+import React, { useEffect, useState } from 'react';
+import {
+  BookOpen,
+  Loader2,
   Zap,
   AlertCircle
 } from 'lucide-react';
-import { loginUser, registerUser, verifyOtp, googleAuth, demoLogin, type UserProfile } from '../services/api';
-
-const GOOGLE_CLIENT_ID = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || '';
-const IS_DUMMY_CLIENT_ID = !GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes('dcnqpf7d8mtr1rdt7n42j4ggph90fda6');
+import {
+  demoLogin,
+  errorMessage,
+  fetchGoogleClientId,
+  googleAuth,
+  loginUser,
+  registerUser,
+  verifyOtp,
+  type UserProfile,
+} from '../services/api';
+import { requestGoogleAccessToken } from '../services/googleIdentity';
 
 interface AuthScreenProps {
   onSuccess: (user: UserProfile, token: string) => void;
@@ -17,12 +24,12 @@ interface AuthScreenProps {
 export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
   const [tab, setTab] = useState<'login' | 'register'>('login');
   const [authStep, setAuthStep] = useState<'form' | 'otp'>('form');
-  
+
   // Credentials
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
-  
+
   // OTP
   const [pendingEmail, setPendingEmail] = useState('');
   const [otpCode, setOtpCode] = useState('');
@@ -33,6 +40,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  // Client ID Google lấy từ backend (GOOGLE_OAUTH_CLIENT_ID) — 1 nguồn cấu hình duy nhất.
+  // undefined = chưa lấy được (máy chủ chưa phản hồi), null = máy chủ chưa bật Google.
+  const [googleClientId, setGoogleClientId] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    fetchGoogleClientId().then(setGoogleClientId, () => setGoogleClientId(undefined));
+  }, []);
 
   // Quick Demo Access
   const handleQuickDemo = async () => {
@@ -41,61 +55,32 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
     try {
       const res = await demoLogin();
       if (res.user && res.token) onSuccess(res.user, res.token);
-    } catch (err: any) {
-    setError(err.message || 'Không thể vào chế độ dùng thử');
-  } finally {
-    setLoading(false);
-  }
-};
+    } catch (err) {
+      setError(errorMessage(err, 'Không thể vào chế độ dùng thử'));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Google Login
-  const handleGoogleLogin = () => {
+  const handleGoogleLogin = async () => {
     setError(null);
-    if (IS_DUMMY_CLIENT_ID) {
-      setError('Google OAuth chưa được cấu hình Client ID thật trên Google Cloud. Bạn có thể bấm "Vào trực tiếp (Dùng thử)" hoặc Đăng ký bằng Email bên dưới.');
-      return;
-    }
-
     setGoogleLoading(true);
     try {
-      const redirectUri = window.location.origin;
-      const oauthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(GOOGLE_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=openid%20email%20profile&prompt=select_account`;
-      const popup = window.open(oauthUrl, 'google_oauth2_popup', 'width=500,height=650');
-      if (!popup) {
-        setGoogleLoading(false);
-        setError('Trình duyệt đã chặn cửa sổ đăng nhập. Vui lòng cho phép popup.');
+      // Lấy lại cấu hình nếu lúc mở trang máy chủ chưa phản hồi
+      const clientId = googleClientId === undefined ? await fetchGoogleClientId() : googleClientId;
+      setGoogleClientId(clientId);
+      if (!clientId) {
+        setError('Đăng nhập Google chưa được bật trên máy chủ. Vui lòng dùng email hoặc chế độ dùng thử.');
         return;
       }
-
-      const pollTimer = setInterval(async () => {
-        try {
-          if (!popup || popup.closed) {
-            clearInterval(pollTimer);
-            setGoogleLoading(false);
-            return;
-          }
-          if (popup.location.href.includes(redirectUri)) {
-            const hash = popup.location.hash;
-            if (hash) {
-              const params = new URLSearchParams(hash.replace('#', '?'));
-              const accessToken = params.get('access_token');
-              if (accessToken) {
-                clearInterval(pollTimer);
-                popup.close();
-                const res = await googleAuth({ access_token: accessToken });
-                if (res.user && res.token) {
-                  onSuccess(res.user, res.token);
-                }
-              }
-            }
-          }
-        } catch {
-          // Cross-origin while on google
-        }
-      }, 500);
-    } catch (e: any) {
+      const accessToken = await requestGoogleAccessToken(clientId);
+      const res = await googleAuth({ access_token: accessToken });
+      if (res.user && res.token) onSuccess(res.user, res.token);
+    } catch (err) {
+      setError(errorMessage(err, 'Đăng nhập bằng Google thất bại'));
+    } finally {
       setGoogleLoading(false);
-      setError('Lỗi mở phiên xác thực Google: ' + (e.message || String(e)));
     }
   };
 
@@ -128,8 +113,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
           onSuccess(res.user, res.token);
         }
       }
-    } catch (err: any) {
-      setError(err.message || 'Đã có lỗi xảy ra');
+    } catch (err) {
+      setError(errorMessage(err, 'Đã có lỗi xảy ra'));
     } finally {
       setLoading(false);
     }
@@ -150,8 +135,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
       if (res.user && res.token) {
         onSuccess(res.user, res.token);
       }
-    } catch (err: any) {
-      setError(err.message || 'Mã xác thực không hợp lệ');
+    } catch (err) {
+      setError(errorMessage(err, 'Mã xác thực không hợp lệ'));
     } finally {
       setLoading(false);
     }

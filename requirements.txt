@@ -1,38 +1,52 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-pydantic==2.9.2
-pydantic-settings==2.5.2
-sqlalchemy==2.0.35
-psycopg2-binary==2.9.9
+# Runtime dependencies của backend. Phiên bản đã được kiểm chứng bằng test suite.
+# Dev/test: requirements-dev.txt
+
+# --- Web / API ---
+fastapi==0.128.0
+uvicorn[standard]==0.40.0
+pydantic==2.12.5
+pydantic-settings==2.15.0
+python-multipart==0.0.32
+
+# --- Database ---
+sqlalchemy==2.0.46
+psycopg2-binary==2.9.13
 alembic==1.13.3
-qdrant-client==1.11.2
-langchain>=0.3.7,<0.4.0
-langchain-core>=0.3.37,<0.4.0
-langgraph>=0.2.39,<0.4.0
-langchain-openai>=0.2.5,<0.4.0
-langchain-google-genai>=2.0.10,<3.0.0
-# langchain-anthropic>=0.3.0
-sentence-transformers>=3.1.1
-FlagEmbedding>=1.2.11
-ragas>=0.2.6
-python-multipart>=0.0.9
-pypdf>=5.0.1
-pymupdf>=1.24.0
-python-docx>=1.1.2
-python-pptx>=1.0.2
-pytesseract>=0.3.13
-Pillow>=10.4.0
-tiktoken>=0.8.0
-python-dotenv>=1.0.1
-streamlit>=1.39.0
-pytest>=8.3.3
-httpx>=0.27.2
-pyjwt>=2.8
-argon2-cffi>=23.1
-google-auth>=2.29
-requests>=2.31
-# Optional — cải thiện chất lượng OCR trên ảnh scan chất lượng thấp:
+
+# --- Vector DB ---
+qdrant-client==1.19.1
+
+# --- LLM orchestration ---
+langchain-core==1.6.4
+langgraph==1.2.12
+langchain-google-genai==4.4.0
+# Provider tuỳ chọn (CHEAP/STRONG_MODEL_PROVIDER=openai|anthropic):
+langchain-openai==1.6.6
+langchain-anthropic==1.7.4
+
+# --- Embedding & rerank (BGE-M3, bge-reranker-v2-m3) ---
+# torch được cài riêng trong Dockerfile (bản CPU) để image không kéo CUDA ~2GB.
+FlagEmbedding==1.4.2
+tiktoken==0.14.0
+
+# --- Ingestion ---
+pypdf==6.6.0
+pymupdf>=1.24,<2
+python-docx>=1.1.2,<2
+python-pptx>=1.0.2,<2
+pytesseract>=0.3.13,<0.4
+Pillow==10.4.0
+# Tuỳ chọn — cải thiện OCR ảnh scan chất lượng thấp:
 # opencv-python-headless>=4.9
- 
-# Binary hệ thống (KHÔNG cài qua pip, phải có trong Dockerfile):
-#   apt-get install -y tesseract-ocr tesseract-ocr-vie
+
+# --- Auth ---
+PyJWT==2.15.1
+argon2-cffi==25.1.0
+google-auth==2.58.0
+requests==2.32.5          # transport cho google-auth
+
+# --- Rate limit dùng chung nhiều instance (REDIS_URL) ---
+redis==6.4.0
+
+# Binary hệ thống (cài qua apt trong Dockerfile, KHÔNG qua pip):
+#   tesseract-ocr tesseract-ocr-vie
