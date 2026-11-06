@@ -29,7 +29,7 @@ Status of StudyRAG as of **November 2026**. Items move to "Done" only when they 
 - [x] **Published evaluation results** — 18-document public corpus ([`eval/CORPUS.md`](eval/CORPUS.md)),
   48 reviewed questions (37 answerable, 11 unanswerable, 11 in English); all 6 configs run;
   [`eval/results/full-v1/report.md`](eval/results/full-v1/report.md) + free re-score
-  [`retrieval-v2`](eval/results/retrieval-v2/report.md). Still open: human audit of the judge.
+  [`retrieval-v2`](eval/results/retrieval-v2/report.md); judge–human agreement 85 % (17/20, judge more lenient).
 
 ## 🚧 Next (in priority order)
 

@@ -118,7 +118,8 @@ An ablation harness ([`eval/`](eval/README.md)) adds one component at a time so 
 Metrics: retrieval **hit@k / recall@k / MRR**; answer **correctness & faithfulness** (LLM-as-judge
 using a *different* model from the generator); **correct refusal rate** on unanswerable questions;
 latency and LLM calls per question. All numbers come with **95 % bootstrap CIs** and paired-bootstrap
-differences, and judge reliability is audited against human labels (`eval/audit.py`).
+differences, and judge reliability is audited against human labels (`eval/audit.py`: 85 % agreement,
+17/20 — see Limitations).
 
 ### Results
 
@@ -242,9 +243,13 @@ migrations/      Alembic          tests/  pytest
 
 - **Small eval set → wide CIs.** Only 37 answerable questions; most differences between configs fall
   inside the 95 % CI, so only the reranker's gain is claimed as real.
-- **Judge not yet validated against a human.** `eval/audit.py` exports a 20-answer sample for human
-  grading, but judge–human agreement has not been measured yet; treat faithfulness/correctness as
-  LLM-judged estimates.
+- **The judge agrees with a human on 85 % of answers (17/20)** (`eval/audit.py`, random sample from
+  `full-v1`, exact correct/partial/incorrect label). All 3 disagreements were the judge being **more
+  lenient** (correct vs. partial ×2 on the same question, partial vs. incorrect ×1); it was never
+  stricter. Mean correctness on the sample: judge 0.95 vs. human 0.875, so absolute correctness above
+  is likely somewhat optimistic; comparisons between configs are less affected because the same judge
+  grades all of them. One grader, 20 answers (16 distinct questions, 18/20 judged correct) — a small
+  check, not a calibration. Faithfulness was not audited.
 - **One label was fixed after the run (q064).** Its gold evidence sat in a pseudo-code chunk that no
   config retrieves, while a neighbouring chunk states the answer directly. An alternative evidence was
   added and retrieval re-scored (`retrieval-v2`, no LLM calls); answer metrics are from `full-v1`.
