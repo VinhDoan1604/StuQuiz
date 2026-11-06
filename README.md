@@ -157,7 +157,11 @@ retrieval); `full` was within 0.03 on every metric in `full-v1`.
 
 - **The reranker is the only component with a statistically clear gain:** MRR +0.17 [+0.09, +0.26]
   and hit@1 0.54 → 0.78 over `dense` (paired bootstrap). It is also the main latency cost (CPU,
-  ~35 s/question).
+  ~35 s/question). Example (q025, "what do the white/grey/black vertex colours mean in Dijkstra?"):
+  with `dense` the evidence was the 5th, LaTeX-cluttered chunk and the model opened with "the
+  documents don't say" — then listed all three meanings from that same chunk; with `hybrid` the
+  evidence was not retrieved at all and the model (honestly) refused. Once the reranker moved the
+  evidence to position 1, every config answered correctly.
 - **Hybrid (sparse + RRF) did not help** on this corpus: hit@5 −0.08 [−0.19, 0.00], MRR −0.02
   [−0.08, +0.05] vs. `dense`. It is kept only as the candidate generator for the reranker.
 - **CRAG / the full loop** raise correctness (0.96 → 0.99) and remove false refusals (3 % → 0 %), but
@@ -253,6 +257,11 @@ migrations/      Alembic          tests/  pytest
 - **One label was fixed after the run (q064).** Its gold evidence sat in a pseudo-code chunk that no
   config retrieves, while a neighbouring chunk states the answer directly. An alternative evidence was
   added and retrieval re-scored (`retrieval-v2`, no LLM calls); answer metrics are from `full-v1`.
+- **False refusals are slightly under-counted.** The judge flags `abstained` only when an answer
+  *mostly* says the information is missing, so a self-contradictory answer that claims "not in the
+  documents" and then answers anyway (q025 with `dense`) is not counted as a refusal. A cheap fix —
+  flag answers that both claim missing information and cite sources, then regenerate — is planned
+  but not yet measured.
 - **Correct-refusal rate is at the ceiling** (11/11 everywhere): the unanswerable questions need
   harder near-miss cases to separate configs.
 - **`hybrid` is not fully deterministic:** Qdrant's RRF produces score ties at the top-5 cut-off and
