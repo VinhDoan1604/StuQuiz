@@ -111,6 +111,7 @@ An ablation harness ([`eval/`](eval/README.md)) adds one component at a time so 
 | `dense` | Naive RAG baseline: dense top-5 → single generation |
 | `hybrid` | + sparse vectors, RRF fusion |
 | `hybrid_rerank` | + cross-encoder rerank (top-20 → top-5) |
+| `parent` | + child → parent expansion (context up to 1,500 tokens) |
 | `crag` | + context grading & query rewriting |
 | `full` | + faithfulness critic & regeneration |
 
@@ -119,9 +120,53 @@ using a *different* model from the generator); **correct refusal rate** on unans
 latency and LLM calls per question. All numbers come with **95 % bootstrap CIs** and paired-bootstrap
 differences, and judge reliability is audited against human labels (`eval/audit.py`).
 
-<!-- TODO(Vinh): fill from eval/results/<run_id>/report.md after a real run. Do not invent numbers. -->
-> **Results:** _pending first full run on a public corpus — table will be published from
-> `report.md`, including configurations that did **not** improve._
+### Results
+
+**Setup:** 18 public documents ([`eval/CORPUS.md`](eval/CORPUS.md): Vietnamese Wikipedia, OpenStax, a
+Vietnamese decree, VOER, course notes/slides), **48 reviewed questions** (37 answerable, 11 unanswerable;
+11 in English against Vietnamese sources). Generator `gemini-2.5-flash`, judge `gpt-5.4` (different
+vendor). BGE-M3, top-k = 5. Brackets are 95 % bootstrap CIs.
+Full reports: [`full-v1`](eval/results/full-v1/report.md) (all configs, with LLM) and
+[`retrieval-v2`](eval/results/retrieval-v2/report.md) (retrieval re-scored for free after fixing the
+label of q064 — see Limitations).
+
+**Retrieval** (answerable questions, n = 37, scored on child chunks — `retrieval-v2`)
+
+| Config | hit@1 | hit@5 | recall@5 | MRR |
+|---|---|---|---|---|
+| `dense` | 0.54 [0.38–0.70] | 0.97 [0.92–1.00] | 0.92 [0.84–0.97] | 0.71 [0.60–0.82] |
+| `hybrid` | 0.57 [0.41–0.73] | 0.89 [0.78–0.97] | 0.86 [0.74–0.96] | 0.69 [0.57–0.81] |
+| `hybrid_rerank` | **0.78** [0.65–0.92] | **1.00** [1.00–1.00] | **0.95** [0.89–0.99] | **0.88** [0.81–0.95] |
+
+`parent` and `crag` rank chunks exactly like `hybrid_rerank` (they change what happens after
+retrieval); `full` was within 0.03 on every metric in `full-v1`.
+
+**Answers** (`full-v1`; faithfulness & correctness on n = 37 answerable, refusal on n = 11 unanswerable)
+
+| Config | Faithfulness | Correctness | False refusal ↓ | Correct refusal | p50 latency | LLM calls |
+|---|---|---|---|---|---|---|
+| `dense` | **0.92** [0.88–0.95] | 0.96 [0.91–1.00] | 0.03 | 11/11 | 5.2 s | 1.0 |
+| `hybrid` | 0.91 [0.87–0.95] | 0.95 [0.87–1.00] | 0.05 | 11/11 | 5.4 s | 1.0 |
+| `hybrid_rerank` | 0.89 [0.86–0.93] | 0.95 [0.89–0.99] | 0.05 | 11/11 | 42.8 s | 1.0 |
+| `parent` | 0.91 [0.87–0.94] | 0.97 [0.93–1.00] | 0.03 | 11/11 | 41.7 s | 1.0 |
+| `crag` | 0.89 [0.85–0.93] | 0.97 [0.93–1.00] | 0.00 | 11/11 | 49.0 s | 2.9 |
+| `full` | 0.87 [0.83–0.92] | **0.99** [0.96–1.00] | 0.00 | 11/11 | 50.3 s | 4.1 |
+
+**What the numbers say**
+
+- **The reranker is the only component with a statistically clear gain:** MRR +0.17 [+0.09, +0.26]
+  and hit@1 0.54 → 0.78 over `dense` (paired bootstrap). It is also the main latency cost (CPU,
+  ~35 s/question).
+- **Hybrid (sparse + RRF) did not help** on this corpus: hit@5 −0.08 [−0.19, 0.00], MRR −0.02
+  [−0.08, +0.05] vs. `dense`. It is kept only as the candidate generator for the reranker.
+- **CRAG / the full loop** raise correctness (0.96 → 0.99) and remove false refusals (3 % → 0 %), but
+  neither difference is significant at n = 37 — while costing ~4× the LLM calls and ~10× the latency of
+  `dense`.
+- **Faithfulness drops slightly** as components are added (0.92 `dense` → 0.87 `full`, Δ −0.04
+  [−0.10, +0.01]) — not significant, but the opposite of what the critic loop is meant to do. Not yet
+  diagnosed; longer parent contexts and multi-source synthesis are the first suspects.
+- **Correct refusal is 11/11 for every config** — the unanswerable set is too easy to discriminate
+  between configs (ceiling effect).
 
 ## Security & data isolation
 
@@ -168,7 +213,7 @@ cd frontend && npm install && npm run dev              # http://localhost:5173
 ## Tests & quality
 
 ```bash
-pytest -q                                  # 96 tests: API, auth isolation, graph routing, memory, quiz, rate limit — no LLM/Qdrant needed
+pytest -q                                  # 107 tests: API, auth isolation, graph routing, memory, quiz, rate limit — no LLM/Qdrant needed
 ruff check app tests migrations scripts
 cd frontend && npm run lint && npm run build
 ```
@@ -195,6 +240,19 @@ migrations/      Alembic          tests/  pytest
 
 ## Limitations & next steps
 
+- **Small eval set → wide CIs.** Only 37 answerable questions; most differences between configs fall
+  inside the 95 % CI, so only the reranker's gain is claimed as real.
+- **Judge not yet validated against a human.** `eval/audit.py` exports a 20-answer sample for human
+  grading, but judge–human agreement has not been measured yet; treat faithfulness/correctness as
+  LLM-judged estimates.
+- **One label was fixed after the run (q064).** Its gold evidence sat in a pseudo-code chunk that no
+  config retrieves, while a neighbouring chunk states the answer directly. An alternative evidence was
+  added and retrieval re-scored (`retrieval-v2`, no LLM calls); answer metrics are from `full-v1`.
+- **Correct-refusal rate is at the ceiling** (11/11 everywhere): the unanswerable questions need
+  harder near-miss cases to separate configs.
+- **`hybrid` is not fully deterministic:** Qdrant's RRF produces score ties at the top-5 cut-off and
+  breaks them arbitrarily, so `hybrid` numbers move slightly between runs (`hybrid_rerank` is stable
+  because it reranks the top 20).
 - Auto-generated eval questions share vocabulary with the source, which makes retrieval look easier
   than real student questions; the dataset is being extended with hand-written paraphrases.
 - Indexing runs in-process; a task queue would be needed for many concurrent uploads.

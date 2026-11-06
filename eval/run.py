@@ -18,7 +18,6 @@ import asyncio
 import json
 import subprocess
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +25,15 @@ from types import SimpleNamespace
 from app.config import settings
 from eval.dataset import EvalItem, load_dataset
 from eval.metrics import evidence_match, normalize_text, retrieval_metrics, split_alternatives
-from eval.pipelines import ALL_CONFIGS, FINAL_TOP_K, GRAPH_CONFIGS, RETRIEVAL_CONFIGS, build_graphs, run_pipeline, warmup
+from eval.pipelines import (
+    ALL_CONFIGS,
+    FINAL_TOP_K,
+    GRAPH_CONFIGS,
+    RETRIEVAL_CONFIGS,
+    build_graphs,
+    run_pipeline,
+    warmup,
+)
 from eval.report import build_report
 
 

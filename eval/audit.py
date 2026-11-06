@@ -19,6 +19,14 @@ FIELDS = ["config", "qid", "question", "gold_answer", "answer", "judge_correctne
 LABEL = {1.0: "correct", 0.5: "partial", 0.0: "incorrect"}
 
 
+def _read_audit(path: Path) -> list[dict[str, str]]:
+    """Đọc audit.csv kể cả sau khi Excel lưu lại: có/không BOM, phân cách ',' hoặc ';'."""
+    text = path.read_text(encoding="utf-8-sig")
+    header = text.split("\n", 1)[0]
+    delimiter = ";" if header.count(";") > header.count(",") else ","
+    return list(csv.DictReader(text.splitlines(keepends=True), delimiter=delimiter))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir")
@@ -31,7 +39,7 @@ def main() -> None:
     csv_path = run_dir / "audit.csv"
 
     if args.score:
-        rows = [r for r in csv.DictReader(csv_path.open(encoding="utf-8")) if r["human_correctness"].strip()]
+        rows = [r for r in _read_audit(csv_path) if (r.get("human_correctness") or "").strip()]
         if not rows:
             raise SystemExit("Chưa có dòng nào được điền human_correctness.")
         agree = sum(r["judge_correctness"] == r["human_correctness"].strip().lower() for r in rows)
@@ -42,7 +50,7 @@ def main() -> None:
     ds = Path("eval/data/questions.jsonl")
     if ds.exists():
         for line in ds.read_text(encoding="utf-8").splitlines():
-            if line.strip():
+            if line.strip() and not line.lstrip().startswith("#"):
                 o = json.loads(line)
                 gold[o["id"]] = o.get("gold_answer", "")
 
@@ -54,7 +62,11 @@ def main() -> None:
     pool = [r for r in latest.values() if r.get("correctness") is not None]
     random.Random(args.seed).shuffle(pool)
 
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
+    if csv_path.exists() and any((r.get("human_correctness") or "").strip() for r in _read_audit(csv_path)):
+        raise SystemExit(f"{csv_path} đã có nhãn người chấm — không ghi đè. Xoá/đổi tên file nếu muốn xuất lại.")
+
+    # utf-8-sig (BOM) để Excel trên Windows hiển thị đúng tiếng Việt.
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         w.writeheader()
         for r in pool[: args.n]:

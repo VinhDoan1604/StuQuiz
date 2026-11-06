@@ -127,7 +127,6 @@ def build_report(
         )
 
     # --- Generation
-    summary_quality: dict[str, Any] = {}
     if not retrieval_only:
         L.append("\n## 2. Chất lượng câu trả lời\n")
         L.append("| Cấu hình | " + " | ".join(lbl for _, lbl, _ in QUALITY_METRICS) + " |")

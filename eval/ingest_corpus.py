@@ -23,12 +23,11 @@ from pathlib import Path
 
 from app.chunking import semantic_chunker as sc
 from app.chunking.semantic_chunker import chunk_document
+from app.db.session import Base, SessionLocal, engine
 from app.embedding.bge_m3_embedder import embed_chunks
 from app.indexing.qdrant_store import delete_document_vectors, upsert_chunks
 from app.ingestion.cleaning import clean_document
 from app.ingestion.parsers import parse_document
-
-from app.db.session import Base, SessionLocal, engine
 from app.models.db_models import ParentChunk
 
 SUPPORTED = {".pdf", ".docx", ".pptx", ".txt", ".md"}
