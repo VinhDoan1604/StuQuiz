@@ -15,7 +15,7 @@ Helper dùng chung cho mọi agent / service cần gọi LLM — 2 kiểu:
    (chấm điểm) — 2 nơi cần output có cấu trúc chặt.
 
 Cả 2 đều dùng `get_llm(task)` của app/llm/router.py — `task` PHẢI thuộc
-Literal["rewrite","decompose","grade","qa","teaching","quiz","summary"].
+Literal["rewrite","decompose","grade","critic","qa","teaching","quiz","summary"].
 
 Lưu ý về with_structured_output(): độ tin cậy có thể khác nhau giữa
 provider (OpenAI/Anthropic qua tool-calling rất ổn định; Gemini qua

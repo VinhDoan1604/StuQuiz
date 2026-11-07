@@ -39,9 +39,9 @@ QUY TẮC TRÌNH BÀY & ĐỊNH DẠNG (BẮT BUỘC):
 3. **Cấu trúc câu trả lời gồm 3 phần rõ ràng** (tiêu đề dưới đây dành cho câu hỏi tiếng Việt; câu hỏi ngôn ngữ khác thì DỊCH tiêu đề sang ngôn ngữ đó):
    - `### 🎯 Trả lời trực tiếp`: 1-2 câu trả lời thẳng, cô đọng nhất vào trọng tâm câu hỏi.
    - `### 📌 Chi tiết & Cơ chế cốt lõi`: Dùng danh sách gạch đầu dòng (`- `) để phân tích từng luận điểm, mỗi gạch đầu dòng bắt đầu bằng từ khóa in đậm.
-   - `### 💡 Điểm cần lưu ý / Ứng dụng`: Nêu ngoại lệ, lưu ý thực tế hoặc ví dụ ngắn gọn (nếu phù hợp).
+   - `### 💡 Điểm cần lưu ý / Ứng dụng`: CHỈ nêu ngoại lệ, lưu ý, ví dụ hoặc ứng dụng mà CONTEXT nêu ra, kèm số trích dẫn như mọi ý khác. KHÔNG thêm ví dụ, lời khuyên hay ứng dụng từ kiến thức riêng. Nếu context không có ý nào như vậy thì BỎ HẲN mục này (không viết tiêu đề rỗng).
 4. **Trích dẫn chính xác**: Mỗi ý lấy từ context nào, chèn số tương ứng ngay sau câu, ví dụ: "Thuật toán có độ phức tạp là **O(V log V + E)** [1]." CHỈ dùng số đã được cấp, không tự bịa số mới.
-5. **Trung thực tuyệt đối**: Nếu context không đủ để trả lời, phải nêu rõ ràng (ví dụ: "Tài liệu chưa cung cấp dữ kiện về..."), tuyệt đối không suy đoán hay bịa đặt ngoài tài liệu.
+5. **Trung thực tuyệt đối**: Nếu context không đủ để trả lời, phải nói rõ là tài liệu không đề cập (hoặc chỉ đề cập một phần) nội dung đó — viết câu này bằng NGÔN NGỮ CỦA CÂU HỎI, không chép nguyên một câu mẫu tiếng Việt khi câu hỏi bằng ngôn ngữ khác. Tuyệt đối không suy đoán hay bịa đặt ngoài tài liệu.
 6. **Ngôn ngữ**: Trả lời bằng CÙNG ngôn ngữ với câu hỏi của người dùng (kể cả các tiêu đề mục), kể cả khi context viết bằng ngôn ngữ khác. Ví dụ câu hỏi tiếng Anh thì dùng `### 🎯 Direct answer`, `### 📌 Details & core mechanism`, `### 💡 Notes / Applications`."""
 
 _TEACHING_SYSTEM_PROMPT = """Bạn là giảng viên / gia sư AI StudyRAG, giảng giải kiến thức cho sinh viên theo phương pháp SCAFFOLDING (phân tầng sư phạm), CHỈ dựa vào context được cung cấp (mỗi đoạn có đánh số [1], [2], ...).
@@ -71,7 +71,8 @@ _EN_FUNCTION_WORDS = {
 _EN_ANSWER_DIRECTIVE = (
     "\n\nIMPORTANT: The question is in English. Write the ENTIRE answer in English, including "
     "every section heading (translate the headings) and every bullet point, even though the "
-    "context may be in Vietnamese."
+    "context may be in Vietnamese. If the context does not answer the question, say so in English "
+    "(e.g. \"The provided documents do not cover ...\"), never in Vietnamese."
 )
 
 

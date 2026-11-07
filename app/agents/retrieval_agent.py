@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.agents.constants import FINAL_TOP_K_BROAD, FINAL_TOP_K_QA, HYBRID_TOP_K
+from app.agents.constants import FINAL_TOP_K_BROAD, FINAL_TOP_K_QA
 from app.agents.state import GraphState
 from app.config import settings
 from app.llm.utils import LLMCallError, acall_llm_text
@@ -166,7 +166,9 @@ async def run_retrieval(state: GraphState) -> GraphState:
 
     all_candidates: list[dict[str, Any]] = []
     for q in search_queries:
-        hits = await retrieve_top_k(q, top_k=final_top_k, hybrid_top_k=HYBRID_TOP_K, document_ids=document_ids)
+        # Số ứng viên trước rerank = RERANK_CANDIDATES (settings), nhưng không ít hơn final_top_k.
+        n_candidates = max(settings.rerank_candidates, final_top_k)
+        hits = await retrieve_top_k(q, top_k=final_top_k, hybrid_top_k=n_candidates, document_ids=document_ids)
         all_candidates.extend(normalize_chunk(h) for h in hits)
 
     # Fallback: search không ra kết quả nào nhưng có tài liệu trong phạm vi (vd câu hỏi
@@ -183,7 +185,7 @@ async def run_retrieval(state: GraphState) -> GraphState:
     pool = _dedupe_candidates(all_candidates)
     rerank_query = main_query or (search_queries[0] if search_queries else "")
 
-    if len(search_queries) > 1 and len(pool) > final_top_k and rerank_query:
+    if settings.rerank_enabled and len(search_queries) > 1 and len(pool) > final_top_k and rerank_query:
         try:
             pool = await arerank(rerank_query, pool, top_k=final_top_k)
         except Exception as exc:

@@ -61,18 +61,29 @@ Nếu sufficiency thấp, feedback PHẢI nêu CỤ THỂ đang thiếu ý/khía
 của câu hỏi (để hệ thống viết lại câu hỏi tìm kiếm bổ sung đúng phần đó),
 KHÔNG nhận xét chung chung như "chưa đủ thông tin"."""
 
-_ANSWER_GRADE_SYSTEM_PROMPT = """Bạn là người chấm điểm khách quan cho hệ
-thống RAG hỗ trợ học tập. Nhiệm vụ: đánh giá câu trả lời DỰA VÀO ĐÚNG
-context đã cho, theo 2 tiêu chí:
+# Critic chấm theo TỪNG KHẲNG ĐỊNH, cùng định nghĩa với judge offline (eval/judge.py).
+# Bản cũ chấm 1 con số faithfulness tổng => chỉ yêu cầu sinh lại 1/37 câu trong eval
+# full-v1, trong khi judge vẫn thấy ~1.2 khẳng định tự thêm mỗi câu.
+_ANSWER_GRADE_SYSTEM_PROMPT = """Bạn là người chấm nghiêm khắc cho hệ thống RAG hỗ
+trợ học tập. Cho: câu hỏi, CONTEXT (các đoạn tài liệu, đánh số) và CÂU TRẢ LỜI.
 
-- faithfulness (0.0-1.0): MỌI thông tin trong câu trả lời có được context
-  hỗ trợ không, hay có phần BỊA ĐẶT/suy diễn ngoài context (hallucination).
-  Đây là tiêu chí QUAN TRỌNG NHẤT — 1 câu bịa đặt cũng đủ để điểm thấp.
-- completeness (0.0-1.0): câu trả lời có giải quyết TRỌN VẸN câu hỏi
-  không, hay còn thiếu ý.
+1. Tách câu trả lời thành các KHẲNG ĐỊNH thực tế độc lập (tối đa 15), gồm cả các ý
+   trong phần lưu ý / ứng dụng / ví dụ. Bỏ qua: số trích dẫn [1], tiêu đề, lời dẫn
+   dắt, câu nói rằng tài liệu không đề cập.
+2. supported=true CHỈ KHI context nêu trực tiếp hoặc suy ra tất yếu. Kiến thức bên
+   ngoài dù ĐÚNG nhưng KHÔNG có trong context => supported=false. Ví dụ, ứng dụng,
+   lời khuyên không có trong context => supported=false.
+3. abstained=true nếu câu trả lời chủ yếu nói tài liệu không đề cập / không đủ
+   thông tin (khi đó claims có thể rỗng).
+4. completeness (0.0-1.0): câu trả lời có giải quyết TRỌN VẸN câu hỏi không, xét
+   trong giới hạn những gì context có.
+5. feedback: nếu còn thiếu ý, nêu CỤ THỂ phần nào của câu hỏi chưa được trả lời;
+   rỗng nếu đủ. (Khẳng định không được hỗ trợ đã liệt kê ở claims, không cần lặp lại.)"""
 
-Nếu điểm thấp, feedback PHẢI nêu CỤ THỂ câu/ý nào bịa đặt hoặc câu hỏi
-phần nào chưa được trả lời, KHÔNG nhận xét chung chung."""
+# Câu trả lời đạt nếu tỉ lệ khẳng định được context hỗ trợ >= ngưỡng này.
+# 0.9: 1 ý lạc trong ~10 ý vẫn qua; từ 2 ý trở lên => sinh lại kèm danh sách ý cần bỏ.
+CLAIM_SUPPORT_THRESHOLD = 0.9
+_MAX_LISTED_CLAIMS = 5
 
 
 class ContextGradeOutput(BaseModel):
@@ -81,10 +92,36 @@ class ContextGradeOutput(BaseModel):
     feedback: str = Field(description="Cụ thể thiếu ý gì nếu sufficiency thấp, rỗng nếu đã đủ")
 
 
+class CriticClaim(BaseModel):
+    claim: str
+    supported: bool
+
+
 class AnswerGradeOutput(BaseModel):
-    faithfulness: float = Field(ge=0.0, le=1.0)
+    abstained: bool = Field(description="True nếu câu trả lời chủ yếu nói tài liệu không đề cập")
+    claims: list[CriticClaim] = Field(description="Các khẳng định thực tế độc lập (tối đa 15)")
     completeness: float = Field(ge=0.0, le=1.0)
-    feedback: str = Field(description="Cụ thể câu nào bịa đặt hoặc phần nào thiếu, rỗng nếu đã đạt")
+    feedback: str = Field(description="Phần nào của câu hỏi chưa được trả lời, rỗng nếu đã đủ")
+
+
+def claim_support_ratio(claims: list[CriticClaim]) -> float:
+    """Tỉ lệ khẳng định được hỗ trợ; không có khẳng định (vd câu từ chối) => 1.0."""
+    if not claims:
+        return 1.0
+    return sum(c.supported for c in claims) / len(claims)
+
+
+def _critic_feedback(result: AnswerGradeOutput) -> str:
+    unsupported = [c.claim for c in result.claims if not c.supported]
+    parts = []
+    if unsupported:
+        listed = "; ".join(f'"{c}"' for c in unsupported[:_MAX_LISTED_CLAIMS])
+        parts.append(
+            f"{len(unsupported)} khẳng định KHÔNG có trong context, hãy bỏ hoặc sửa cho khớp tài liệu: {listed}."
+        )
+    if result.feedback.strip():
+        parts.append(result.feedback.strip())
+    return " ".join(parts)
 
 
 def _loops_exhausted(state: GraphState) -> bool:
@@ -146,14 +183,20 @@ async def grade_answer(state: GraphState) -> ReflectionResult:
         )
 
     context_block = format_chunks_for_prompt(chunks)
-    user_prompt = f"Context:\n{context_block}\n\nCâu trả lời cần chấm:\n{answer}"
+    question = state.get("user_query", "")
+    user_prompt = f"Câu hỏi: {question}\n\nCONTEXT:\n{context_block}\n\nCÂU TRẢ LỜI CẦN CHẤM:\n{answer}"
 
     graded = True
     try:
-        result = await acall_structured("grade", _ANSWER_GRADE_SYSTEM_PROMPT, user_prompt, AnswerGradeOutput)
-        grade: float | None = 0.6 * result.faithfulness + 0.4 * result.completeness
-        faithful = result.faithfulness >= ANSWER_ACCEPT_THRESHOLD
-        feedback = result.feedback
+        result = await acall_structured("critic", _ANSWER_GRADE_SYSTEM_PROMPT, user_prompt, AnswerGradeOutput)
+        support = claim_support_ratio(result.claims)
+        grade: float | None = 0.6 * support + 0.4 * result.completeness
+        faithful = support >= CLAIM_SUPPORT_THRESHOLD
+        feedback = _critic_feedback(result)
+        logger.info(
+            "grade_answer: %d claim, %d không được hỗ trợ (support=%.2f), abstained=%s",
+            len(result.claims), sum(not c.supported for c in result.claims), support, result.abstained,
+        )
     except LLMCallError as exc:
         logger.error("grade_answer: chấm điểm thất bại (%s) — fail-open, ĐÁNH DẤU graded=False.", exc)
         grade, faithful, feedback, graded = None, True, "", False

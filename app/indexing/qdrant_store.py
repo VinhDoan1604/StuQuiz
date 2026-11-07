@@ -195,6 +195,29 @@ def hybrid_search(
     return [_format_point(pt) for pt in response.points]
 
 
+def dense_search(
+    dense_vec: list[float],
+    top_k: int = 20,
+    metadata_filter: dict | None = None,
+    document_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Chỉ dense (BGE-M3). Dùng khi RETRIEVAL_MODE=dense. `document_ids` là BẮT BUỘC."""
+    if not document_ids:
+        logger.warning("dense_search gọi không kèm document_ids -> trả rỗng (chặn tìm toàn cục).")
+        return []
+
+    ensure_collection()
+    response = client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=dense_vec,
+        using="dense",
+        limit=top_k,
+        query_filter=_doc_filter(document_ids, metadata_filter),
+        with_payload=True,
+    )
+    return [_format_point(pt) for pt in response.points]
+
+
 def get_all_chunks_for_documents(document_ids: list[str]) -> list[dict[str, Any]]:
     """Scroll toàn bộ chunk của các document (phục vụ tóm tắt đầy đủ)."""
     if not document_ids:

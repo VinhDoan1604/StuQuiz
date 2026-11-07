@@ -5,7 +5,9 @@ Quy tắc phân bổ:
 - CHEAP model (CHEAP_MODEL_PROVIDER / CHEAP_MODEL_NAME):
   + rewrite: viết lại truy vấn dựa vào lịch sử
   + decompose: phân rã câu hỏi phức hợp thành sub-queries
-  + grade: chấm context & tính trung thực của answer
+  + grade: chấm độ đủ của context (CRAG)
+  + critic: chấm faithfulness của answer theo từng khẳng định (Self-RAG). Đặt
+    CRITIC_MODEL_PROVIDER / CRITIC_MODEL_NAME để dùng model KHÁC họ với model sinh.
   + qa: trả lời câu hỏi trực tiếp, ngắn gọn
 - STRONG model (STRONG_MODEL_PROVIDER / STRONG_MODEL_NAME):
   + teaching: giảng bài theo phương pháp giàn giáo (scaffolding)
@@ -38,7 +40,7 @@ from app.llm.providers import build_chat_model, get_provider
 
 logger = logging.getLogger("app.llm.router")
 
-TaskType = Literal["rewrite", "decompose", "grade", "qa", "teaching", "quiz", "summary"]
+TaskType = Literal["rewrite", "decompose", "grade", "critic", "qa", "teaching", "quiz", "summary"]
 
 _USAGE_HISTORY_LIMIT = 1000
 
@@ -155,6 +157,7 @@ class UsageTrackingCallbackHandler(BaseCallbackHandler):
 
 TASK_TEMPERATURE_MAP: dict[TaskType, float] = {
     "grade": 0.0,       # chấm điểm khách quan, ổn định
+    "critic": 0.0,
     "rewrite": 0.1,     # viết lại truy vấn bám sát ý gốc
     "decompose": 0.1,   # phân rã câu hỏi theo logic chặt
     "qa": 0.5,
@@ -163,7 +166,7 @@ TASK_TEMPERATURE_MAP: dict[TaskType, float] = {
     "teaching": 0.7,    # ví dụ minh hoạ phong phú
 }
 
-CHEAP_TASKS: set[TaskType] = {"rewrite", "decompose", "grade", "qa"}
+CHEAP_TASKS: set[TaskType] = {"rewrite", "decompose", "grade", "critic", "qa"}
 STRONG_TASKS: set[TaskType] = {"teaching", "quiz", "summary"}
 
 
@@ -191,6 +194,8 @@ def get_llm(task: TaskType, streaming: bool = False) -> BaseChatModel:
     override = _MODEL_OVERRIDE.get()
     if override and task in USER_SELECTABLE_TASKS:
         provider, model_name = override
+    elif task == "critic" and settings.critic_model_provider.strip() and settings.critic_model_name.strip():
+        provider, model_name = settings.critic_model_provider, settings.critic_model_name.strip()
     elif task in CHEAP_TASKS:
         provider, model_name = settings.cheap_model_provider, settings.cheap_model_name
     else:
@@ -208,4 +213,6 @@ def _build_llm(task: TaskType, streaming: bool, provider: str, model_name: str) 
         "max_retries": settings.llm_max_retries,
         "callbacks": [UsageTrackingCallbackHandler(task=task, model_name=f"{spec.name}:{model_name}")],
     }
+    if task == "critic" and spec.protocol == "anthropic":
+        common["max_tokens"] = 4096  # danh sách claim dài; mặc định langchain-anthropic dễ cắt cụt tool call
     return build_chat_model(spec, model_name, common)

@@ -44,6 +44,41 @@ async def ahybrid_search(
     )
 
 
+async def adense_search(
+    dense_vec: Any,
+    top_k: int = DEFAULT_HYBRID_TOP_K,
+    metadata_filter: dict | None = None,
+    document_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Gọi dense-only search trên Qdrant."""
+    from app.indexing.qdrant_store import dense_search
+
+    return await asyncio.to_thread(
+        dense_search,
+        dense_vec=dense_vec,
+        top_k=top_k,
+        metadata_filter=metadata_filter,
+        document_ids=document_ids,
+    )
+
+
+async def asearch(
+    vec: dict[str, Any],
+    top_k: int,
+    metadata_filter: dict | None = None,
+    document_ids: list[str] | None = None,
+    mode: str | None = None,
+) -> list[dict[str, Any]]:
+    """Search theo RETRIEVAL_MODE (settings) hoặc `mode` truyền vào: "hybrid" | "dense"."""
+    from app.config import settings
+
+    if (mode or settings.retrieval_mode) == "dense":
+        return await adense_search(vec["dense"], top_k=top_k, metadata_filter=metadata_filter, document_ids=document_ids)
+    return await ahybrid_search(
+        vec["dense"], vec["sparse"], top_k=top_k, metadata_filter=metadata_filter, document_ids=document_ids
+    )
+
+
 async def aget_all_chunks_for_documents(document_ids: list[str]) -> list[dict[str, Any]]:
     """Lấy toàn bộ chunk của các document (phục vụ tóm tắt đầy đủ)."""
     from app.indexing.qdrant_store import get_all_chunks_for_documents
@@ -59,35 +94,37 @@ async def arerank(query: str, candidates: list[dict[str, Any]], top_k: int = 5) 
 async def retrieve_top_k(
     query: str,
     top_k: int = 5,
-    hybrid_top_k: int = DEFAULT_HYBRID_TOP_K,
+    hybrid_top_k: int | None = None,
     metadata_filter: dict | None = None,
     document_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Pipeline đầy đủ: embed -> hybrid search (top hybrid_top_k) -> rerank (xuống top_k).
+    """Pipeline đầy đủ: embed -> search (RETRIEVAL_MODE, lấy `hybrid_top_k` ứng viên,
+    mặc định RERANK_CANDIDATES) -> rerank (xuống top_k, nếu RERANK_ENABLED).
     Dùng cho QA/teaching/quiz (cần độ liên quan cao với 1 query cụ thể)."""
+    from app.config import settings
+
     if not query or not query.strip():
         return []
+    n_candidates = hybrid_top_k or settings.rerank_candidates
+    # Không rerank => chỉ cần đúng top_k ứng viên.
+    search_k = max(n_candidates, top_k) if settings.rerank_enabled else top_k
     try:
         vec = await aembed_query(query)
-        candidates = await ahybrid_search(
-            vec["dense"],
-            vec["sparse"],
-            top_k=hybrid_top_k,
-            metadata_filter=metadata_filter,
-            document_ids=document_ids,
-        )
+        candidates = await asearch(vec, top_k=search_k, metadata_filter=metadata_filter, document_ids=document_ids)
     except Exception as exc:
-        logger.error("retrieve_top_k('%s'): lỗi embed/hybrid_search: %s", query[:80], exc)
+        logger.error("retrieve_top_k('%s'): lỗi embed/search: %s", query[:80], exc)
         return []
 
     if not candidates:
         return []
+    if not settings.rerank_enabled:
+        return candidates[:top_k]
 
     try:
         return await arerank(query, candidates, top_k=top_k)
     except Exception as exc:
         logger.warning(
-            "retrieve_top_k('%s'): rerank lỗi (%s) — dùng thứ tự hybrid search gốc.",
+            "retrieve_top_k('%s'): rerank lỗi (%s) — dùng thứ tự search gốc.",
             query[:80],
             exc,
         )

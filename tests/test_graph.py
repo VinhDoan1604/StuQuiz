@@ -14,7 +14,10 @@ import asyncio
 import uuid
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from app.agents.state import GraphState
+from app.config import settings
 from app.graph.build_graph import (
     _extract_reflection_trace,
     build_study_graph,
@@ -25,6 +28,14 @@ from app.graph.build_graph import (
     run_graph,
 )
 from app.models.db_models import ChatSession, ChatTurn
+
+
+@pytest.fixture(autouse=True)
+def _full_pipeline(monkeypatch):
+    # Production mặc định tắt CRAG/critic; file này kiểm tra đồ thị đầy đủ nên bật cả hai.
+    # Hành vi khi tắt: tests/test_eval_followup.py.
+    monkeypatch.setattr(settings, "enable_crag", True)
+    monkeypatch.setattr(settings, "enable_answer_critic", True)
 
 
 def test_graph_topology():

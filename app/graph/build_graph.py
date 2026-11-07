@@ -123,8 +123,16 @@ def route_after_orchestrator(state: GraphState) -> Literal["retrieval"]:
     return "retrieval"
 
 
-def route_after_retrieval(state: GraphState) -> Literal["quiz_summary", "grade_context"]:
-    return "quiz_summary" if state.get("intent", "qa") in ("quiz", "summary") else "grade_context"
+def route_after_retrieval(state: GraphState) -> Literal["quiz_summary", "grade_context", "generation"]:
+    if state.get("intent", "qa") in ("quiz", "summary"):
+        return "quiz_summary"
+    # ENABLE_CRAG=false: bỏ chấm context + vòng viết lại truy vấn, sinh luôn.
+    return "grade_context" if settings.enable_crag else "generation"
+
+
+def route_after_generation(state: GraphState) -> Literal["grade_answer", "accept_answer"]:
+    # ENABLE_ANSWER_CRITIC=false: chấp nhận bản nháp, không chấm faithfulness / sinh lại.
+    return "grade_answer" if settings.enable_answer_critic else "accept_answer"
 
 
 def route_after_grade_context(state: GraphState) -> Literal["rewrite_query", "generation"]:
@@ -166,14 +174,17 @@ def build_study_graph():
     wf.add_conditional_edges("orchestrator", route_after_orchestrator, {"retrieval": "retrieval"})
     wf.add_conditional_edges(
         "retrieval", route_after_retrieval,
-        {"quiz_summary": "quiz_summary", "grade_context": "grade_context"},
+        {"quiz_summary": "quiz_summary", "grade_context": "grade_context", "generation": "generation"},
     )
     wf.add_conditional_edges(
         "grade_context", route_after_grade_context,
         {"rewrite_query": "rewrite_query", "generation": "generation"},
     )
     wf.add_edge("rewrite_query", "retrieval")
-    wf.add_edge("generation", "grade_answer")
+    wf.add_conditional_edges(
+        "generation", route_after_generation,
+        {"grade_answer": "grade_answer", "accept_answer": "accept_answer"},
+    )
     wf.add_conditional_edges(
         "grade_answer", route_after_grade_answer,
         {"retry_generation": "retry_generation", "accept_answer": "accept_answer"},

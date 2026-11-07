@@ -18,6 +18,5 @@ CONTEXT_SUFFICIENT_THRESHOLD = 0.6
 ANSWER_ACCEPT_THRESHOLD = 0.7
 
 # Số chunk giữ lại sau rerank, theo intent.
-HYBRID_TOP_K = 20          # số ứng viên lấy từ hybrid search trước khi rerank
 FINAL_TOP_K_QA = 5         # qa / teaching
 FINAL_TOP_K_BROAD = 15     # quiz / summary khi kích hoạt từ chat

@@ -95,6 +95,32 @@ class Settings(BaseSettings):
     rate_limit_chat_per_minute: int = 30
 
     # --- RAG ---
+    # Xem eval/results/full-v1/report.md và EVAL_FOLLOWUP.md cho số liệu đằng sau các mặc định.
+    # Retrieval: "hybrid" (dense + sparse, RRF) | "dense" (chỉ dense BGE-M3).
+    # dense: ngang hybrid khi đã rerank (eval retrieval-v3: MRR 0.881 cả hai) và giữ chất lượng ở top-10.
+    retrieval_mode: str = "dense"
+    # Cross-encoder reranker: thành phần duy nhất cải thiện có ý nghĩa (MRR +0.17) -> bật mặc định.
+    rerank_enabled: bool = True
+    # Số ứng viên đưa vào reranker (latency CPU tỉ lệ ~tuyến tính với số này).
+    # 10: MRR không đổi so với 20 (dense_rerank, retrieval-v3) và nhanh ~1.7x.
+    rerank_candidates: int = 10
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_max_length: int = 512
+    # Lượng tử hoá động int8 (torch, chỉ áp khi chạy CPU) — nhanh hơn, không cần thêm thư viện.
+    reranker_int8: bool = False
+    # "" = tự chọn (cuda nếu có, ngược lại cpu); hoặc "cpu" / "cuda:0".
+    reranker_device: str = ""
+    # Số luồng CPU cho torch khi rerank; 0 = số nhân vật lý ước lượng (os.cpu_count() // 2).
+    reranker_threads: int = 0
+    # CRAG (chấm context + viết lại truy vấn) và critic (chấm faithfulness + sinh lại).
+    # Mặc định TẮT: dataset v1 chưa cho thấy lợi ích có ý nghĩa (hit@5 = 1.0 sẵn), trong khi
+    # bật => ~3-4x token, p95 tới ~160s (eval full-v1). Tắt cả 2 => 1 lời gọi LLM/câu.
+    enable_crag: bool = False
+    enable_answer_critic: bool = False
+    # Model riêng cho critic (task "critic"). Để trống => dùng CHEAP model.
+    # Nên đặt model KHÁC họ với model sinh để critic không "dễ dãi" với chính nó.
+    critic_model_provider: str = ""
+    critic_model_name: str = ""
     max_reflection_loops: int = 2
     max_chat_message_chars: int = 4000
     enable_parent_expansion: bool = True
@@ -112,6 +138,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_non_dev(self):
+        self.retrieval_mode = (self.retrieval_mode or "hybrid").strip().lower()
+        if self.retrieval_mode not in ("hybrid", "dense"):
+            raise ValueError("RETRIEVAL_MODE phải là 'hybrid' hoặc 'dense'.")
+        if self.rerank_candidates < 1:
+            raise ValueError("RERANK_CANDIDATES phải >= 1.")
         if not self.jwt_secret:  # "JWT_SECRET=" để trống trong .env
             self.jwt_secret = _DEV_JWT_SECRET
         if self.app_env != "dev":
