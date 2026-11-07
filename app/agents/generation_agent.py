@@ -145,14 +145,25 @@ async def run_generation(state: GraphState) -> GraphState:
     else:
         task, system_prompt = "qa", _QA_SYSTEM_PROMPT
 
-    user_prompt = f"Câu hỏi: {query}\n\nContext:\n{context_block}"
+    english = _is_english_question(user_query)
+    user_prompt = (f"Question: {query}" if english else f"Câu hỏi: {query}") + f"\n\nContext:\n{context_block}"
     if feedback:
-        user_prompt += (
-            f"\n\n--- LƯU Ý QUAN TRỌNG ---\nBài trả lời TRƯỚC của bạn có vấn đề, phản hồi từ "
-            f'người chấm: "{feedback}". Hãy viết lại, khắc phục ĐÚNG vấn đề này, bám sát context hơn.'
-        )
+        if english:
+            # Khối phản hồi cũng phải bằng ngôn ngữ câu hỏi: feedback của critic viết tiếng Việt
+            # và có thể kéo cả câu trả lời (kể cả câu từ chối) sang tiếng Việt khi sinh lại.
+            user_prompt += (
+                "\n\n--- IMPORTANT NOTE ---\nYour PREVIOUS answer had a problem. The grader's "
+                f'feedback (may be written in Vietnamese; still answer in English): "{feedback}". '
+                "Rewrite the answer, fix exactly this problem and stay closer to the context. "
+                "If the context really does not cover the question, say so honestly in English."
+            )
+        else:
+            user_prompt += (
+                f"\n\n--- LƯU Ý QUAN TRỌNG ---\nBài trả lời TRƯỚC của bạn có vấn đề, phản hồi từ "
+                f'người chấm: "{feedback}". Hãy viết lại, khắc phục ĐÚNG vấn đề này, bám sát context hơn.'
+            )
         logger.info("run_generation: regenerate theo feedback='%s'", feedback[:100])
-    if _is_english_question(user_query):
+    if english:
         user_prompt += _EN_ANSWER_DIRECTIVE  # đặt CUỐI prompt để model tuân theo chắc chắn
 
     try:

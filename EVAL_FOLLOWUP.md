@@ -111,7 +111,13 @@ Nguyên nhân đã xác nhận trong `full-v1/raw.jsonl`: 3 câu trả lời cho
 *"Tài liệu chưa cung cấp dữ kiện về..."* trong quy tắc 5.
 - `generation_agent._QA_SYSTEM_PROMPT` quy tắc 5: bỏ câu mẫu tiếng Việt, yêu cầu viết câu từ chối bằng ngôn ngữ của câu hỏi.
 - `_EN_ANSWER_DIRECTIVE` (gắn cuối prompt khi câu hỏi là tiếng Anh): thêm câu mẫu tiếng Anh *"The provided documents do not cover ..."*.
-- Xác nhận: `python -m eval.run --qids q065 q066 q067 --configs hybrid_rerank full`, tốn ít credit.
+- Xác nhận (07/11/2026, `lang-fix`…`lang-fix4`, 3 câu): `hybrid_rerank` trả lời đúng ngôn ngữ **3/3**.
+  `full` lần đầu chỉ **1/3** (q065, q067 trả lời tiếng Việt sau 2 vòng sinh lại), các lần sau 3/3, 2/2, 1/1.
+  Số mẫu rất nhỏ và kết quả dao động giữa các lần chạy, nên **chưa thể nói đã hết lỗi ở `full`**.
+  Nghi nguyên nhân: khối phản hồi của critic khi sinh lại viết toàn tiếng Việt kéo câu trả lời theo.
+  Đã sửa (`run_generation`: khối phản hồi và nhãn "Question:" theo ngôn ngữ câu hỏi), **chưa đo riêng**
+  vì các lần chạy sau đó dính lỗi LLM provider (lang-fix3: 1/3 câu lỗi, lang-fix4: 2/3 câu lỗi,
+  "LLM sinh câu trả lời thất bại"; thử trực tiếp 2/3 lời gọi lỗi). Cần chạy lại khi provider ổn định.
 
 ### 3.2 Mục "💡 Điểm cần lưu ý / Ứng dụng" chỉ dùng context 🟡
 Mục này giờ chỉ được nêu ngoại lệ, ví dụ hay ứng dụng **có trong context**, kèm số trích dẫn.
