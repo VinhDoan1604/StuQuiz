@@ -19,7 +19,7 @@ Chú thích trạng thái: ✅ xong và đã đo · 🟡 xong code, chưa đo (c
 | Prompt: giới hạn mục "💡 Lưu ý / Ứng dụng" | 🟡 | Đã sửa; cần chạy LLM để đo faithfulness |
 | Critic chặt hơn | 🟡 | Chấm theo từng khẳng định như judge; có thể dùng model riêng |
 | Dataset v2 | ✅ | 33 câu mới, người dùng đã duyệt → tổng 81 câu; retrieval-only trên v2: mục 4.1 |
-| Chạy lại eval đầy đủ chỉ với các cấu hình cần so sánh | ⬜ 👤 | Cần credit LLM; lệnh ở cuối file |
+| Chạy lại eval chỉ với các cấu hình cần so sánh | ✅ một phần | `crag-hard-v2` (mục 4.3); còn lại: `lang-fix` lặp lại, `CRITIC_MODEL_*` khác họ |
 
 ---
 
@@ -207,17 +207,31 @@ embed + rerank; câu gốc vẫn là thứ gửi cho LLM sinh câu trả lời.
 - **Không giúp v2s11** ("cây khung" ≠ "cây bao trùm"): cần hiểu ngữ nghĩa, tức multi-query/CRAG.
   Câu này vẫn là bằng chứng để đo CRAG ở mục dưới.
 
-👤 **Cách kiểm CRAG cho công bằng** (tốn credit): chạy `dense_rerank` so với `crag` **chỉ trên
-nhóm khó**, nơi CRAG có việc để làm:
-```bash
-python -m eval.run --dataset eval/data/questions_v2.jsonl --configs dense_rerank crag full \
-  --tags student-phrasing hard-unanswerable --run-id crag-hard-v2
-```
-(`--tags` mới thêm vào `eval.run`: chạy câu mang ít nhất 1 tag; 33 câu.) Kỳ vọng: CRAG cứu được
-v2s08/v2s11 và các câu xếp hạng thấp; critic giúp ở nhóm `hard-unanswerable` (chặn bịa chi tiết
-gần đúng). Nếu vẫn không hơn, kết luận "tắt" mới thật sự chắc.
+### 4.3 CRAG và critic trên nhóm câu khó ✅ (run `crag-hard-v2`, 07/11/2026)
 
----
+33 câu (21 `student-phrasing` + 12 `hard-unanswerable`), mặc định mới (dense top-10, chuẩn hoá truy vấn bật),
+judge `gpt-5.4`, model sinh `gemini-2.5-flash`. Lệnh:
+`python -m eval.run --dataset eval/data/questions_v2.jsonl --configs dense_rerank crag full --tags student-phrasing hard-unanswerable --run-id crag-hard-v2`
+
+| Cấu hình | Faithfulness | Correctness | Từ chối nhầm | Từ chối đúng | LLM calls | Token TB | p50 | p95 |
+|---|---|---|---|---|---|---|---|---|
+| `dense_rerank` (1 lần sinh) | 0,967 | 0,929 | 0,048 | 12/12 | 1,0 | 2.841 | 15,5s | 22,6s |
+| `crag` | 0,960 | 0,929 | 0,048 | 12/12 | 3,5 | 8.913 | 22,3s | 62,4s |
+| `full` | 0,961 | 0,929 | 0,048 | 12/12 | 4,4 | 11.998 | 25,6s | 57,0s |
+
+- **Không có khác biệt nào**: mọi Δ so với `dense_rerank` đều 0 hoặc CI chứa 0 (faithfulness −0,007).
+  Kết quả giống hệt nhau ở correctness, từ chối nhầm và từ chối đúng.
+- Cái giá thì rõ: **3,5–4,4 lời gọi LLM và gấp 3–4 lần token** cho cùng chất lượng.
+- Câu hỏi "dataset có quá dễ cho CRAG không" giờ đã được kiểm: dù có câu retrieval trượt và câu
+  không dấu, CRAG vẫn không cải thiện. Mặc định **tắt** vì vậy có cơ sở trên cả v1 lẫn nhóm câu khó.
+- Ca đáng chú ý, v2s11 ("cây khung lớn nhất"): CRAG viết lại truy vấn rất tốt (tự suy ra "đảo chiều
+  trọng số", kéo thêm `wiki_minimum_spanning_tree.md`, `wiki_prim.md`) nhưng vẫn không lấy được đoạn
+  bằng chứng nên câu trả lời vẫn là từ chối. Đây là lần duy nhất CRAG có việc để làm, và nó chưa đủ.
+- 12/12 câu không có đáp án khó đều được từ chối đúng **ngay cả khi không có critic**, nên chưa có
+  chỗ nào để critic chứng minh giá trị chống ảo giác trên tập này.
+- Giới hạn: n=21 câu có đáp án, CI rộng; 1 lần chạy, không lặp để đo dao động của LLM. Chưa đo
+  `CRITIC_MODEL_*` khác họ, và chưa đo "chỉ bật CRAG khi điểm context thấp".
+
 
 ## 5. Chạy lại eval 👤 (cần credit LLM, chưa chạy)
 
