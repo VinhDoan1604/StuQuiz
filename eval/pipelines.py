@@ -32,7 +32,7 @@ from typing import Any
 from app.agents.generation_agent import _ERROR_FALLBACK_ANSWER, run_generation
 from app.embedding.bge_m3_embedder import clear_embedding_cache
 from app.llm.router import get_cumulative_usage, reset_usage_metrics
-from app.retrieval.helpers import aembed_query, ahybrid_search, arerank, normalize_chunk
+from app.retrieval.helpers import aembed_query, ahybrid_search, aprepare_query, arerank, normalize_chunk
 
 FINAL_TOP_K = 5
 
@@ -84,6 +84,7 @@ def _dense_search(dense_vec: list[float], top_k: int, document_ids: list[str]) -
 
 async def retrieve(config: str, question: str, document_ids: list[str]) -> tuple[list[dict], list[dict]]:
     """-> (context gửi LLM, chunk con trước khi mở rộng parent)."""
+    question = await aprepare_query(question)  # no-op khi QUERY_NORMALIZE=false
     vec = await aembed_query(question)
     if config == "dense":
         hits = await asyncio.to_thread(_dense_search, vec["dense"], FINAL_TOP_K, document_ids)

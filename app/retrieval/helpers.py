@@ -91,6 +91,25 @@ async def arerank(query: str, candidates: list[dict[str, Any]], top_k: int = 5) 
     return await asyncio.to_thread(rerank, query, candidates, top_k)
 
 
+async def aprepare_query(query: str) -> str:
+    """Chuẩn hoá truy vấn cho retrieval nếu QUERY_NORMALIZE bật; lỗi => trả câu gốc."""
+    from app.config import settings
+
+    if not settings.query_normalize or not query:
+        return query
+    try:
+        from app.retrieval.query_normalizer import get_lexicon, normalize_query
+
+        lex = await asyncio.to_thread(get_lexicon)
+        out = normalize_query(query, lex)
+        if out != query:
+            logger.info("query_normalize: %r -> %r", query[:80], out[:80])
+        return out
+    except Exception as exc:
+        logger.warning("query_normalize lỗi (%s) — dùng câu gốc.", exc)
+        return query
+
+
 async def retrieve_top_k(
     query: str,
     top_k: int = 5,
@@ -105,6 +124,7 @@ async def retrieve_top_k(
 
     if not query or not query.strip():
         return []
+    query = await aprepare_query(query)
     n_candidates = hybrid_top_k or settings.rerank_candidates
     # Không rerank => chỉ cần đúng top_k ứng viên.
     search_k = max(n_candidates, top_k) if settings.rerank_enabled else top_k

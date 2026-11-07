@@ -210,6 +210,7 @@ async def main_async(args) -> None:
         },
         # Ảnh hưởng tới crag/full (đi qua retrieval_agent của production).
         "retrieval_mode": settings.retrieval_mode,
+        "query_normalize": settings.query_normalize,
     }
     meta_path = run_dir / "meta.json"
     if meta_path.exists():  # resume: chặn trộn kết quả từ model khác nhau
@@ -218,6 +219,8 @@ async def main_async(args) -> None:
             raise SystemExit("Resume với model sinh/judge khác lần chạy trước — tạo --run-id mới.")
         if old.get("reranker", meta["reranker"]) != meta["reranker"]:
             raise SystemExit("Resume với cấu hình reranker khác lần chạy trước — tạo --run-id mới.")
+        if old.get("query_normalize", meta["query_normalize"]) != meta["query_normalize"]:
+            raise SystemExit("Resume với QUERY_NORMALIZE khác lần chạy trước — tạo --run-id mới.")
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     latest = _load_latest(raw_path)

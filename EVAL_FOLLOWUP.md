@@ -180,6 +180,33 @@ Mặc định mới (dense, top-10), tách theo nhóm câu có đáp án:
 - Thú vị: không rerank, nhóm student lại có MRR ngang v1 (0,732 so với 0,710). Reranker là phần
   bị văn phong sinh viên làm hại nhiều nhất. Có thể nó nhạy với chữ không dấu hơn embedder.
 
+### 4.2 Chuẩn hoá truy vấn (không LLM) ✅
+
+`app/retrieval/query_normalizer.py`, bật bằng `QUERY_NORMALIZE=true` (mặc định bật). Chạy một lần trước
+embed + rerank; câu gốc vẫn là thứ gửi cho LLM sinh câu trả lời.
+- Mở rộng viết tắt phổ biến (`bn, đc, ko, vs, vd, ntn, mn, z, j`…), bỏ qua từ viết hoa và câu tiếng Anh.
+- Câu hoàn toàn không dấu: khôi phục dấu bằng từ điển dựng từ chính các chunk đã index (tần suất từ
+  và cặp từ, chọn đường tốt nhất kiểu Viterbi; từ lạ như `bfs`, `dijkstra` giữ nguyên). Từ điển làm mới sau 10 phút.
+- **Cố ý không có bảng đồng nghĩa theo miền** ("cây khung" → "cây bao trùm"): đó là chỉnh theo bộ test.
+
+Đo (`retrieval-v2-norm` so với `retrieval-v2data`, cùng cấu hình dense top-10, retrieval-only):
+
+| Nhóm | n | MRR `dense_rerank` trước → sau | hit@5 trước → sau |
+|---|---|---|---|
+| v1 | 37 | 0,881 → 0,881 | 1,000 → 1,000 |
+| student-phrasing | 21 | 0,763 → 0,807 | 0,905 → 0,952 |
+| Tất cả | 58 | 0,838 → 0,854 | 0,966 → 0,983 |
+
+- **Chỉ 2 câu đổi:** v2s08 (gõ không dấu) từ trượt hẳn lên hạng 1 (0 → 1,0); v2s10 hơi tệ đi
+  (0,33 → 0,25) vì "bn vậy mn" thành "bao nhiêu vậy mọi người" thêm từ nhiễu vào truy vấn.
+- **Bằng chứng mỏng:** lợi ích đến từ đúng 1 câu; không có CI nào tách khỏi 0. Chỉ có 1/21 câu student
+  gõ hoàn toàn không dấu, nên phần khôi phục dấu gần như chưa được thử. Kết luận đúng: "không làm
+  hại v1, sửa được một ca không dấu", chưa phải "cải thiện chắc chắn".
+- Rủi ro đã thấy: khôi phục dấu chọn theo tần suất nên có thể sai ("đề thi" → "đề thị", "câu 55" → "cấu 55"
+  khi từ điển có "thị/cấu" nhiều hơn). Nếu thấy hại câu thật, đặt `QUERY_NORMALIZE=false`.
+- **Không giúp v2s11** ("cây khung" ≠ "cây bao trùm"): cần hiểu ngữ nghĩa, tức multi-query/CRAG.
+  Câu này vẫn là bằng chứng để đo CRAG ở mục dưới.
+
 👤 **Cách kiểm CRAG cho công bằng** (tốn credit): chạy `dense_rerank` so với `crag` **chỉ trên
 nhóm khó**, nơi CRAG có việc để làm:
 ```bash

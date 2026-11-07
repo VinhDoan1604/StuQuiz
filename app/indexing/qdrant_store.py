@@ -218,6 +218,24 @@ def dense_search(
     return [_format_point(pt) for pt in response.points]
 
 
+def iter_chunk_texts(limit: int = 20000):
+    """Sinh text của các chunk đã index (mọi document), tối đa `limit` — dựng từ điển cho
+    app/retrieval/query_normalizer.py."""
+    ensure_collection()
+    offset, seen = None, 0
+    while seen < limit:
+        points, offset = client.scroll(
+            collection_name=COLLECTION_NAME, limit=200, offset=offset, with_payload=["text"], with_vectors=False
+        )
+        for pt in points:
+            text = (pt.payload or {}).get("text")
+            if text:
+                yield text
+                seen += 1
+        if offset is None:
+            break
+
+
 def get_all_chunks_for_documents(document_ids: list[str]) -> list[dict[str, Any]]:
     """Scroll toàn bộ chunk của các document (phục vụ tóm tắt đầy đủ)."""
     if not document_ids:

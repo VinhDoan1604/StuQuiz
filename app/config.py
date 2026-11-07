@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     reranker_device: str = ""
     # Số luồng CPU cho torch khi rerank; 0 = số nhân vật lý ước lượng (os.cpu_count() // 2).
     reranker_threads: int = 0
+    # Chuẩn hoá truy vấn trước embed + rerank (mở rộng viết tắt, khôi phục dấu tiếng Việt).
+    # Không dùng LLM. Xem app/retrieval/query_normalizer.py và EVAL_FOLLOWUP.md mục 4.2.
+    query_normalize: bool = True
     # CRAG (chấm context + viết lại truy vấn) và critic (chấm faithfulness + sinh lại).
     # Mặc định TẮT: dataset v1 chưa cho thấy lợi ích có ý nghĩa (hit@5 = 1.0 sẵn), trong khi
     # bật => ~3-4x token, p95 tới ~160s (eval full-v1). Tắt cả 2 => 1 lời gọi LLM/câu.
