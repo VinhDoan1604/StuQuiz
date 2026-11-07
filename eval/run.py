@@ -4,6 +4,10 @@ eval/run.py — chạy ablation + chấm điểm + sinh báo cáo.
     # 0) Nạp corpus & duyệt dataset (xem eval/README.md)
     # 1) Chỉ retrieval (không cần LLM, nhanh, rẻ):
     python -m eval.run --retrieval-only --configs dense hybrid hybrid_rerank
+    # Thử reranker nhanh hơn (chỉ retrieval, miễn phí):
+    RERANK_CANDIDATES=10 python -m eval.run --retrieval-only --configs dense hybrid_rerank --run-id rr-top10
+    # Chỉ chạy các cấu hình cần so sánh để tiết kiệm credit:
+    python -m eval.run --configs dense hybrid_rerank full
     # 2) Đầy đủ:
     EVAL_JUDGE_MODEL=<model khác model sinh> python -m eval.run
     # 3) Tiếp tục lần chạy bị ngắt (chạy lại các câu lỗi):
@@ -163,6 +167,11 @@ async def main_async(args) -> None:
         if missing:
             raise SystemExit(f"Không có trong dataset: {', '.join(sorted(missing))}")
         items = [i for i in items if i.id in wanted]
+    if args.tags:
+        wanted_tags = set(args.tags)
+        items = [i for i in items if wanted_tags & set(i.tags)]
+        if not items:
+            raise SystemExit(f"Không có câu nào mang tag: {', '.join(sorted(wanted_tags))}")
     if args.limit:
         items = _take_limit(items, args.limit)
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
@@ -192,12 +201,23 @@ async def main_async(args) -> None:
         "corpus": manifest["documents"],
         "generator": {"provider": settings.cheap_model_provider, "model": settings.cheap_model_name},
         "judge": judge_meta,
+        "reranker": {
+            "model": settings.reranker_model,
+            "candidates": settings.rerank_candidates,
+            "max_length": settings.reranker_max_length,
+            "int8": settings.reranker_int8,
+            "device": settings.reranker_device or "auto",
+        },
+        # Ảnh hưởng tới crag/full (đi qua retrieval_agent của production).
+        "retrieval_mode": settings.retrieval_mode,
     }
     meta_path = run_dir / "meta.json"
     if meta_path.exists():  # resume: chặn trộn kết quả từ model khác nhau
         old = json.loads(meta_path.read_text(encoding="utf-8"))
         if (old.get("generator"), old.get("judge")) != (meta["generator"], meta["judge"]):
             raise SystemExit("Resume với model sinh/judge khác lần chạy trước — tạo --run-id mới.")
+        if old.get("reranker", meta["reranker"]) != meta["reranker"]:
+            raise SystemExit("Resume với cấu hình reranker khác lần chạy trước — tạo --run-id mới.")
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     latest = _load_latest(raw_path)
@@ -268,6 +288,8 @@ def main() -> None:
     ap.add_argument("--run-id")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--qids", nargs="+", help="Chỉ chạy các câu này (vd: --qids q057 q061 q065)")
+    ap.add_argument("--tags", nargs="+",
+                    help="Chỉ chạy câu mang ÍT NHẤT 1 tag này (vd: --tags student-phrasing hard-unanswerable)")
     ap.add_argument("--retrieval-only", action="store_true")
     ap.add_argument("--include-unreviewed", action="store_true")
     ap.add_argument("--allow-orphans", action="store_true")

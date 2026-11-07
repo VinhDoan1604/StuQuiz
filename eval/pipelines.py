@@ -6,7 +6,11 @@ thành phần so với cấu hình liền trước:
 
   dense         Naive RAG = dense top-5 -> 1 lần sinh.            (BASELINE)
   hybrid        + sparse lexical, hợp nhất RRF (top-5).
-  hybrid_rerank + cross-encoder reranker (hybrid top-20 -> rerank -> top-5).
+  hybrid_rerank + cross-encoder reranker (hybrid top-N -> rerank -> top-5).
+  dense_rerank  (nhánh phụ) dense top-N -> rerank -> top-5: so với hybrid_rerank để biết
+                sparse còn đóng góp gì khi đã có reranker (RETRIEVAL_MODE=dense hay hybrid).
+  parent        hybrid_rerank + mở rộng parent.
+  N = RERANK_CANDIDATES trong settings (mặc định 20) — đặt biến môi trường để thử top-10.
   crag          + Retrieval Agent (decompose) + grade_context + viết lại truy vấn (CRAG).
   full          + Critic chấm faithfulness + sinh lại (Self-RAG)  = đồ thị đầy đủ.
 
@@ -31,9 +35,15 @@ from app.llm.router import get_cumulative_usage, reset_usage_metrics
 from app.retrieval.helpers import aembed_query, ahybrid_search, arerank, normalize_chunk
 
 FINAL_TOP_K = 5
-HYBRID_TOP_K = 20
 
-RETRIEVAL_CONFIGS = ("dense", "hybrid", "hybrid_rerank", "parent")
+
+def rerank_candidates() -> int:
+    from app.config import settings
+
+    return settings.rerank_candidates
+
+
+RETRIEVAL_CONFIGS = ("dense", "hybrid", "hybrid_rerank", "dense_rerank", "parent")
 GRAPH_CONFIGS = ("crag", "full")
 ALL_CONFIGS = RETRIEVAL_CONFIGS + GRAPH_CONFIGS
 
@@ -83,8 +93,13 @@ async def retrieve(config: str, question: str, document_ids: list[str]) -> tuple
         hits = await ahybrid_search(vec["dense"], vec["sparse"], top_k=FINAL_TOP_K, document_ids=document_ids)
         chunks = [normalize_chunk(h) for h in hits]
         return chunks, chunks
+    elif config == "dense_rerank":
+        cands = await asyncio.to_thread(_dense_search, vec["dense"], rerank_candidates(), document_ids)
+        hits = await arerank(question, cands, top_k=FINAL_TOP_K) if cands else []
+        chunks = [normalize_chunk(h) for h in hits]
+        return chunks, chunks
     elif config in ("hybrid_rerank", "parent"):
-        cands = await ahybrid_search(vec["dense"], vec["sparse"], top_k=HYBRID_TOP_K, document_ids=document_ids)
+        cands = await ahybrid_search(vec["dense"], vec["sparse"], top_k=rerank_candidates(), document_ids=document_ids)
         hits = await arerank(question, cands, top_k=FINAL_TOP_K) if cands else []
         children = [normalize_chunk(h) for h in hits]
         chunks = children

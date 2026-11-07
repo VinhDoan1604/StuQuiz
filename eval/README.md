@@ -8,7 +8,9 @@ Bộ eval này thay thế hoàn toàn `ragas_eval.py` cũ (baseline tính ngư�
 |---|---|---|
 | `dense` | — | **Baseline = Naive RAG**: dense top-5 → 1 lần sinh |
 | `hybrid` | + sparse lexical, RRF | |
-| `hybrid_rerank` | + cross-encoder reranker | hybrid top-20 → rerank → top-5 |
+| `hybrid_rerank` | + cross-encoder reranker | hybrid top-N → rerank → top-5 (N = `RERANK_CANDIDATES`, mặc định 10) |
+| `dense_rerank` | nhánh phụ: dense top-N → rerank | so với `hybrid_rerank` để biết sparse còn giúp gì khi đã rerank |
+| `parent` | `hybrid_rerank` + mở rộng parent | |
 | `crag` | + Retrieval Agent, chấm context, viết lại truy vấn | tái dùng node trong `build_graph.py` |
 | `full` | + Critic chấm faithfulness, sinh lại | đồ thị đầy đủ |
 
@@ -35,6 +37,26 @@ python -m eval.run
 python -m eval.audit eval/results/<run_id> --n 20   # điền human_correctness trong audit.csv
 python -m eval.audit eval/results/<run_id> --score
 ```
+
+Chạy lại tiết kiệm credit: chỉ chạy cấu hình cần so sánh, vd `python -m eval.run --configs dense hybrid_rerank full`.
+
+Thử reranker nhanh hơn (miễn phí, chỉ retrieval):
+
+```bash
+python -m scripts.bench_reranker                    # latency từng biến thể, không cần Qdrant
+RERANK_CANDIDATES=10 RERANKER_INT8=true python -m eval.run --retrieval-only \
+    --configs dense hybrid_rerank dense_rerank --run-id <id>
+```
+
+Cấu hình reranker được ghi vào `meta.json` và đầu `report.md`; resume với cấu hình khác bị chặn.
+
+### Dataset v2
+
+`eval/data/questions_v2.jsonl` = 48 câu v1 + 33 câu mới (đã duyệt 07/11/2026, sinh bởi
+`python -m eval.build_v2_drafts`, tự kiểm bằng chứng/nhãn trên index): 21 câu viết theo văn
+phong sinh viên (`student-phrasing`) và 12 câu không có đáp án khó (`hard-unanswerable`).
+Chạy lại `build_v2_drafts` sẽ ghi đè file với `reviewed=false`. Chạy eval:
+`python -m eval.run --dataset eval/data/questions_v2.jsonl ...`.
 
 Kết quả: `eval/results/<run_id>/{report.md, summary.json, raw.jsonl, meta.json}`.
 Chạy bị ngắt/lỗi 429 → chạy lại cùng `--run-id`, chỉ các câu lỗi được chạy lại.

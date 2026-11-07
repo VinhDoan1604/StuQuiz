@@ -97,6 +97,12 @@ def build_report(
     L.append(f"- Ngày: {meta['date']} · commit: `{meta.get('git_commit', 'n/a')}`")
     L.append(f"- Dataset: **{len(items)} câu** ({n_ans} có đáp án, {n_unans} không có đáp án)")
     L.append(f"- Corpus: {len(meta['corpus'])} tài liệu · embedding `{meta['embedding_model']}` · top-k={meta['final_top_k']}")
+    if meta.get("reranker"):
+        r = meta["reranker"]
+        L.append(
+            f"- Reranker: `{r['model']}` · {r['candidates']} ứng viên · max_length={r['max_length']}"
+            f" · int8={r['int8']} · device={r['device']}"
+        )
     if not retrieval_only:
         g = meta["generator"]
         j = meta["judge"]
