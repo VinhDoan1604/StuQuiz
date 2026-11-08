@@ -1,7 +1,11 @@
 # Cải thiện hệ thống sau eval `full-v1`: đã làm / chưa làm
 
-Ngày 2026-11-07. Commit gốc `918f58c`; các thay đổi bên dưới **chưa commit**.
-Kiểm tra: `pytest` 120/120 pass (có 13 test mới trong `tests/test_eval_followup.py`), `ruff` sạch.
+Ngày 2026-11-07 → 11-08. Commit gốc `918f58c`; các thay đổi đã commit và push lên `origin/main`
+(`7411a4e`, `7ac8298`, `8ec206e`, `037157b`, `0f60774`).
+Kiểm tra: `pytest` 126/126 pass, `ruff` sạch.
+
+**Kết luận: việc B đóng ở đây** (người dùng quyết 08/11/2026, không chạy lại toàn bộ 81 câu để so với v1).
+Mục "Còn mở" ở cuối file liệt kê những gì chưa làm hoặc chưa chắc.
 
 Chú thích trạng thái: ✅ xong và đã đo · 🟡 xong code, chưa đo (cần LLM, tốn credit) · ⬜ chưa làm · 👤 cần bạn làm hoặc quyết.
 
@@ -15,11 +19,12 @@ Chú thích trạng thái: ✅ xong và đã đo · 🟡 xong code, chưa đo (c
 | Xem lại sparse/hybrid | ✅ | Khi đã rerank, sparse không giúp gì → mặc định mới `RETRIEVAL_MODE=dense` |
 | Bật/tắt CRAG và critic | ✅ | `ENABLE_CRAG`, `ENABLE_ANSWER_CRITIC`, **mặc định tắt** (người dùng quyết 07/11/2026) |
 | Giảm độ trễ rerank | ✅ | p50 **37,4s → 12,0s** (p95 48,4s → 14,8s), MRR giữ nguyên 0,881 |
-| Prompt: câu từ chối không gắn tiếng Việt | 🟡 | Đã sửa; cần chạy LLM để xác nhận |
-| Prompt: giới hạn mục "💡 Lưu ý / Ứng dụng" | 🟡 | Đã sửa; cần chạy LLM để đo faithfulness |
-| Critic chặt hơn | 🟡 | Chấm theo từng khẳng định như judge; có thể dùng model riêng |
+| Prompt: câu từ chối không gắn tiếng Việt | ✅ một phần | `hybrid_rerank` đúng 3/3; `full` dao động (1/3 rồi 3/3), đã sửa thêm khối phản hồi; `crag-hard-v2` đạt 4/4 câu tiếng Anh (mục 3.1) |
+| Prompt: giới hạn mục "💡 Lưu ý / Ứng dụng" | 🟡 | Đã sửa; faithfulness 0,96–0,97 trên 33 câu khó, **chưa có đối chứng trước/sau** |
+| Critic chặt hơn | 🟡 | Đã sửa (từng khẳng định, model riêng được). Trên `crag-hard-v2` không cải thiện gì; ngưỡng 0,9 và critic khác họ chưa đo |
+| Chuẩn hoá truy vấn (thêm sau) | ✅ | Không LLM; student-phrasing MRR 0,763 → 0,807, nhưng chỉ nhờ 1 câu (mục 4.2) |
 | Dataset v2 | ✅ | 33 câu mới, người dùng đã duyệt → tổng 81 câu; retrieval-only trên v2: mục 4.1 |
-| Chạy lại eval chỉ với các cấu hình cần so sánh | ✅ một phần | `crag-hard-v2` (mục 4.3); còn lại: `lang-fix` lặp lại, `CRITIC_MODEL_*` khác họ |
+| Chạy lại eval chỉ với các cấu hình cần so sánh | ✅ một phần | Retrieval-only trên cả 81 câu (4.1) + LLM trên 33 câu khó (`crag-hard-v2`, 4.3). **Không** chạy LLM trên toàn 81 câu |
 
 ---
 
@@ -233,25 +238,25 @@ judge `gpt-5.4`, model sinh `gemini-2.5-flash`. Lệnh:
   `CRITIC_MODEL_*` khác họ, và chưa đo "chỉ bật CRAG khi điểm context thấp".
 
 
-## 5. Chạy lại eval 👤 (cần credit LLM, chưa chạy)
+## 5. Đã chạy eval nào, còn thiếu gì
 
-Thêm vào eval: cấu hình reranker được ghi vào `meta.json` và đầu `report.md`, và resume một
-`--run-id` với cấu hình reranker khác bị chặn. Lệnh gợi ý, chỉ chạy các cấu hình cần so sánh:
+| Run | Nội dung | Tốn LLM |
+|---|---|---|
+| `retrieval-v3-*`, `v4`, `v4-int8` | retrieval-only, 48 câu v1 (mục 1–2) | không |
+| `retrieval-v2data`, `retrieval-v2-norm` | retrieval-only, 81 câu v2, tắt/bật chuẩn hoá (mục 4.1–4.2) | không |
+| `lang-fix` … `lang-fix4` | 3 câu tiếng Anh không có đáp án (mục 3.1); `lang-fix3/4` dính lỗi provider | có, ít |
+| `crag-hard-v2` | `dense_rerank`/`crag`/`full` trên 33 câu khó (mục 4.3) | có |
+
+**Không chạy:** `--configs dense dense_rerank full` trên toàn bộ 81 câu. Lý do: 33 câu khó đã cho kết luận
+rõ về CRAG/critic, và retrieval trên 48 câu v1 không đổi (MRR 0,881, hit@5 1,0) sau các thay đổi, nên rủi ro
+hồi quy chủ yếu nằm ở **prompt**. Hệ quả cần nhớ: **không có số liệu LLM nào so được trực tiếp với `full-v1`**
+(đổi đồng thời retrieval dense top-10, prompt, critic, chuẩn hoá truy vấn). Nếu sau này cần con số đó:
 
 ```bash
-# 0. Kiểm tra nhanh lỗi ngôn ngữ ở câu từ chối (3 câu)
-python -m eval.run --qids q065 q066 q067 --configs hybrid_rerank full --run-id lang-fix
-
-# 1. Đợt chính: dataset v2 sau khi duyệt, cấu hình mặc định mới (dense, top-10)
 python -m eval.run --dataset eval/data/questions_v2.jsonl --configs dense dense_rerank full --run-id full-v2
-
-# 2. Thử critic khác họ model (tuỳ chọn)
-CRITIC_MODEL_PROVIDER=shopaikey_openai CRITIC_MODEL_NAME=<model> \
-  python -m eval.run --dataset eval/data/questions_v2.jsonl --configs full --run-id full-v2-critic
+# critic khác họ model (tuỳ chọn)
+CRITIC_MODEL_PROVIDER=shopaikey_openai CRITIC_MODEL_NAME=<model>   python -m eval.run --dataset eval/data/questions_v2.jsonl --configs full --run-id full-v2-critic
 ```
-
-Lưu ý: `crag`/`full` đi qua `retrieval_agent` của production, nên giờ dùng dense top-10.
-So với `full-v1` (hybrid top-20) là thay **hai** thứ cùng lúc: retrieval và prompt/critic.
 
 ---
 
@@ -264,10 +269,22 @@ So với `full-v1` (hybrid top-20) là thay **hai** thứ cùng lúc: retrieval 
 `tests/test_graph.py` (fixture bật CRAG/critic).
 
 **Mới:** `scripts/bench_reranker.py`, `eval/build_v2_drafts.py`, `eval/data/questions_v2.jsonl`,
-`tests/test_eval_followup.py`, `EVAL_FOLLOWUP.md`.
+`tests/test_eval_followup.py`, `tests/test_query_normalizer.py`, `app/retrieval/query_normalizer.py`, `EVAL_FOLLOWUP.md`.
+Sửa thêm sau đó: `app/config.py`/`.env.example` (`QUERY_NORMALIZE`), `app/retrieval/helpers.py`, `app/indexing/qdrant_store.py`
+(`iter_chunk_texts`), `app/agents/generation_agent.py` (khối phản hồi theo ngôn ngữ câu hỏi), `eval/pipelines.py`, `eval/run.py` (meta `query_normalize`).
 
 **Kết quả đo** (thư mục `eval/results/` nằm trong `.gitignore`, muốn commit thì cần `git add -f`):
 `retrieval-v4/`, `retrieval-v4-int8/` (số chính thức), `retrieval-v3-*` (chỉ dùng số chất lượng),
 `rerank-bench-v1.json`.
 
-**Chưa commit.** Khi bạn đồng ý, tôi sẽ tạo branch và commit.
+## 7. Còn mở (không chặn việc đóng B)
+
+- **Rerank vẫn ~12–15s/câu trên CPU.** Cần GPU (`RERANKER_DEVICE=cuda:0`) hoặc model nhỏ hơn / ONNX; chưa làm.
+- **Không có đối chứng LLM trước/sau** cho sửa prompt "💡" và critic mới trên 48 câu v1.
+- **Ngôn ngữ câu từ chối ở `full`** chưa kiểm sạch sau bản sửa khối phản hồi (mẫu nhỏ, dao động giữa các lần chạy).
+- **v2s11** ("cây khung" ≠ "cây bao trùm") vẫn trượt, kể cả với CRAG. Hướng: multi-query, hoặc chỉ bật CRAG khi điểm context thấp.
+- **Khôi phục dấu** chọn theo tần suất nên có thể sai ("đề thi" → "đề thị"); lợi ích đo được chỉ từ 1 câu. Tắt bằng `QUERY_NORMALIZE=false`.
+- Prompt teaching (ví dụ minh hoạ) cùng rủi ro với "💡" nhưng chưa sửa vì eval không đo mode đó.
+- Mọi câu v2 do Claude soạn; chưa có câu sinh viên thật. Chưa có câu tiền đề sai.
+- Embedder BGE-M3 có thể dính cùng lỗi số luồng torch như reranker; chưa đo.
+- Kết quả trong `eval/results/` không nằm trong git (`.gitignore`); muốn lưu thì `git add -f`.
