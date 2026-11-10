@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.ownership import public_demo_document_ids
 from app.core.rate_limit import auth_limiter
 from app.core.security import (
     create_token,
@@ -30,7 +31,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db.session import get_db
-from app.models.db_models import User
+from app.models.db_models import StudySpace, User
 from app.utils.mailer import send_verification_email
 from app.utils.time import utcnow
 
@@ -288,6 +289,10 @@ def demo_login(db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+    public_docs = public_demo_document_ids(db)
+    if public_docs:
+        db.add(StudySpace(user_id=user.id, title="Tài liệu mẫu", description="Bộ tài liệu công khai để dùng thử", document_ids=public_docs))
+        db.commit()
     return _auth_success(user, "Đã tạo phiên dùng thử.")
 
 

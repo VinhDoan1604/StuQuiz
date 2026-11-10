@@ -326,6 +326,9 @@ def _parse_pdf(raw_bytes: bytes, filename: str) -> ParsedDocument:
         import fitz
         doc = fitz.open(stream=raw_bytes, filetype="pdf")
         total_pages = len(doc)
+        if settings.max_pdf_pages and total_pages > settings.max_pdf_pages:
+            raise ParsingError(f"PDF có {total_pages} trang, vượt giới hạn {settings.max_pdf_pages} trang.")
+        ocr_pages = 0
         page_lines = [_page_lines_by_block(doc[i]) for i in range(total_pages)]
         style = _analyze_font_style(page_lines)
 
@@ -344,6 +347,11 @@ def _parse_pdf(raw_bytes: bytes, filename: str) -> ParsedDocument:
                     "Trang %d của %s có %d ảnh nhưng chỉ có %d ký tự text — kích hoạt OCR fallback.",
                     page_idx, filename, len(images), stripped_len,
                 )
+                ocr_pages += 1
+                if settings.max_ocr_pages and ocr_pages > settings.max_ocr_pages:
+                    raise ParsingError(
+                        f"PDF scan cần OCR quá {settings.max_ocr_pages} trang. Hãy tách file nhỏ hơn."
+                    )
                 try:
                     zoom = OCR_RENDER_DPI / 72
                     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
@@ -402,6 +410,8 @@ def _parse_pdf(raw_bytes: bytes, filename: str) -> ParsedDocument:
 
         doc.close()
 
+    except ParsingError:
+        raise  # vượt giới hạn: không lùi về pypdf
     except Exception as fitz_err:
         logger.warning("PyMuPDF parser gặp lỗi (%s), chuyển sang fallback pypdf...", fitz_err)
         try:

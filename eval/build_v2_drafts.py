@@ -1,7 +1,7 @@
 """
 eval/build_v2_drafts.py — soạn nháp câu hỏi cho dataset v2 rồi KIỂM TRA bằng code.
 
-Nhắm vào 3 điểm yếu của dataset v1 (xem EVAL_FOLLOWUP.md):
+Nhắm vào 3 điểm yếu của dataset v1 (xem eval/FOLLOWUP.md):
   1. Câu không có đáp án quá dễ (từ chối đúng = 1.0 ở mọi cấu hình) -> thêm câu
      "hard-unanswerable": chủ đề NẰM TRONG corpus nhưng chi tiết được hỏi thì không có
      (năm/tạp chí công bố, con số cụ thể, cơ chế chỉ được nhắc tên).
@@ -238,7 +238,7 @@ def check(chunks: list[dict]) -> list[str]:
 def write(items: list[dict]) -> None:
     lines = [
         "# Dataset v2 = v1 (48 câu đã duyệt) + 33 câu nháp (reviewed=false) do eval/build_v2_drafts.py sinh.",
-        "# Câu nháp bị load_dataset() bỏ qua cho tới khi người duyệt đổi reviewed=true. Xem EVAL_FOLLOWUP.md.",
+        "# Câu nháp bị load_dataset() bỏ qua cho tới khi người duyệt đổi reviewed=true. Xem eval/FOLLOWUP.md.",
     ]
     for line in V1_PATH.read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.startswith("#"):

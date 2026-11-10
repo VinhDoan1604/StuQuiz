@@ -24,6 +24,7 @@ class GraphState(TypedDict, total=False):
     # Orchestrator output
     intent: Literal["qa", "teaching", "quiz", "summary"]
     suggested_review_topic: str | None
+    standalone_query: str     # câu hỏi đã tự đủ nghĩa (chỉ có khi phiên đã có lịch sử)
 
     # Retrieval
     rewritten_queries: list[str]
@@ -37,6 +38,8 @@ class GraphState(TypedDict, total=False):
     answer_draft: str
     final_answer: str
     citations: list[dict[str, Any]]
+    generation_failed: bool   # LLM lỗi: answer_draft là câu báo lỗi, không lưu vào lịch sử
+    stream_tokens: bool       # True: phát từng token qua stream "custom" của LangGraph
 
     # Memory
     chat_history_summary: str

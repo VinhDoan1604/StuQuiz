@@ -107,6 +107,10 @@ class ChatRequest(BaseModel):
     model: Optional[str] = Field(default=None, max_length=200)
 
 
+class TurnFeedbackRequest(BaseModel):
+    rating: Literal[-1, 0, 1]   # 0 = bỏ đánh giá
+
+
 class ChatModelItem(BaseModel):
     id: str
     provider: str
@@ -153,6 +157,7 @@ class QuizAnswerResult(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: Optional[str] = None       # id phiên đã chuẩn hoá phía server
+    turn_id: Optional[str] = None          # id lượt trả lời, dùng để gửi đánh giá 👍/👎
     intent: Literal["qa", "teaching", "quiz", "summary"]
     answer: str
     citations: list[dict[str, Any]] = []   # [{"index", "file", "page", "section", "snippet"}]

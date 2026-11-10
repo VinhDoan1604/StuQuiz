@@ -1,0 +1,18 @@
+# HTTPS tự động (Let's Encrypt). Caddy là lớp biên duy nhất nhìn thấy IP thật của người dùng.
+{$DOMAIN} {
+	# Không nén luồng SSE: gzip giữ các mảnh nhỏ lại và làm mất hiệu ứng stream.
+	@compressible not path /api/chat/stream
+	encode @compressible gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+	}
+
+	reverse_proxy web:80 {
+		# -1: flush ngay từng mảnh, để SSE /chat/stream hiện token theo thời gian thực
+		flush_interval -1
+		transport http {
+			read_timeout 300s
+		}
+	}
+}

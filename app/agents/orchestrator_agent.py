@@ -56,7 +56,12 @@ Phân loại tin nhắn của sinh viên vào ĐÚNG 1 trong 4 nhãn:
 nhắn đã nhắm rõ vào 1 khái niệm/chủ đề cụ thể.
 
 Nếu có tóm tắt hội thoại trước đó, dùng nó để hiểu ngữ cảnh (vd "cho tôi
-quiz về phần đó" sau khi vừa học 1 khái niệm -> intent="quiz")."""
+quiz về phần đó" sau khi vừa học 1 khái niệm -> intent="quiz").
+
+Cuối cùng viết `standalone_query`. Nếu tin nhắn phụ thuộc hội thoại trước (đại từ, "giải thích
+lại đi", "tại sao vậy", "còn cái kia thì sao", "cho ví dụ"), viết lại thành MỘT câu hỏi độc lập
+nêu rõ chủ đề đang nói tới, giữ nguyên ngôn ngữ của tin nhắn. Nếu tin nhắn đã tự đủ nghĩa, hoặc
+không có hội thoại trước, chép NGUYÊN VĂN tin nhắn, không diễn đạt lại."""
 
 
 class IntentClassification(BaseModel):
@@ -65,6 +70,9 @@ class IntentClassification(BaseModel):
     )
     is_vague_or_generic: bool = Field(
         description="True nếu tin nhắn không nhắm tới 1 chủ đề cụ thể nào"
+    )
+    standalone_query: str = Field(
+        default="", description="Câu hỏi tự đủ nghĩa; chép nguyên văn nếu tin nhắn đã tự đủ nghĩa"
     )
 
 
@@ -127,10 +135,13 @@ async def run_orchestrator(state: GraphState) -> GraphState:
         result = await acall_structured("rewrite", _SYSTEM_PROMPT, user_prompt, IntentClassification)
         intent: Literal["qa", "teaching", "quiz", "summary"] = result.intent
         is_vague = result.is_vague_or_generic
+        # Chỉ tin bản viết lại khi thật sự có lịch sử: câu đầu phiên không có gì để viết lại.
+        standalone_query = result.standalone_query.strip() if chat_history_summary.strip() else ""
     except LLMCallError as exc:
         logger.error("run_orchestrator: phân loại intent thất bại (%s) — fallback intent='qa'.", exc)
         intent = "qa"
         is_vague = False
+        standalone_query = ""
 
     suggested_review_topic: str | None = None
     if is_vague:
@@ -141,4 +152,7 @@ async def run_orchestrator(state: GraphState) -> GraphState:
                 suggested_review_topic,
             )
 
-    return {**state, "intent": intent, "suggested_review_topic": suggested_review_topic}
+    return {
+        **state, "intent": intent, "suggested_review_topic": suggested_review_topic,
+        "standalone_query": standalone_query,
+    }

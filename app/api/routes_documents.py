@@ -1,20 +1,24 @@
 """
 Upload / liệt kê / xoá tài liệu.
 
-Pipeline lập chỉ mục (chạy nền): parse -> clean -> chunk (parent + child) ->
+Pipeline lập chỉ mục (chạy nền, mỗi lúc 1 tài liệu để không tranh CPU với chat):
+parse/OCR -> clean -> chunk (parent + child) ->
 lưu parent (DB) -> embed child (BGE-M3) -> upsert Qdrant. Trạng thái tài liệu:
 processing -> ready | failed.
 """
 import asyncio
 import logging
 import os
+import threading
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.chunking.semantic_chunker import chunk_document
 from app.config import settings
-from app.core.ownership import get_owned_document
+from app.core.ownership import get_owned_document, public_demo_document_ids
+from app.core.quota import enforce_upload_quota, is_demo
+from app.core.rate_limit import upload_limiter
 from app.core.security import get_current_user
 from app.db.session import SessionLocal, get_db
 from app.embedding.bge_m3_embedder import embed_chunks
@@ -29,6 +33,9 @@ logger = logging.getLogger("app.api.documents")
 
 ALLOWED_EXTENSIONS = {"pdf", "docx", "pptx", "txt", "md"}
 _INTERRUPTED_MESSAGE = "Quá trình lập chỉ mục bị gián đoạn (máy chủ khởi động lại). Vui lòng tải lại tệp."
+_PARSE_FAILED_MESSAGE = "Không đọc được tệp này. Vui lòng kiểm tra định dạng tệp."
+_EMPTY_MESSAGE = "Không trích xuất được nội dung nào từ tệp này."
+_INGEST_SLOT = threading.BoundedSemaphore(1)
 
 
 def fail_stale_processing_documents() -> int:
@@ -99,7 +106,34 @@ def _process_document_indexing(doc_id: str, owner_id: str, parsed, filename: str
                 db.commit()
 
 
-@router.post("/upload")
+def _mark_failed(doc_id: str, message: str) -> None:
+    with SessionLocal() as db:
+        doc = db.get(Document, doc_id)
+        if doc is not None:
+            doc.status = "failed"
+            doc.error_message = message
+            db.commit()
+
+
+def _parse_and_index(doc_id: str, owner_id: str, raw_bytes: bytes, filename: str) -> None:
+    """Tác vụ nền: parse/OCR có thể mất nhiều phút nên không được nằm trong request."""
+    with _INGEST_SLOT:
+        try:
+            parsed = parse_document(raw_bytes, filename)
+        except (UnsupportedFileTypeError, ParsingError) as exc:
+            _mark_failed(doc_id, str(exc))
+            return
+        except Exception:
+            logger.exception("[Task %s] Lỗi parse '%s'.", doc_id, filename)
+            _mark_failed(doc_id, _PARSE_FAILED_MESSAGE)
+            return
+        if not parsed.blocks:
+            _mark_failed(doc_id, _EMPTY_MESSAGE)
+            return
+        _process_document_indexing(doc_id, owner_id, parsed, filename)
+
+
+@router.post("/upload", dependencies=[Depends(upload_limiter)])
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -123,19 +157,22 @@ async def upload_document(
         raise HTTPException(status_code=413, detail=f"Tệp vượt quá {settings.max_upload_mb}MB.")
     if not raw_bytes:
         raise HTTPException(status_code=400, detail="Tệp rỗng.")
+    enforce_upload_quota(db, user)
 
-    try:
-        parsed = await asyncio.to_thread(parse_document, raw_bytes, filename)
-    except UnsupportedFileTypeError as exc:
-        raise HTTPException(status_code=415, detail=str(exc))
-    except ParsingError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    if not parsed.blocks:
-        raise HTTPException(status_code=422, detail="Không trích xuất được nội dung nào từ tệp này.")
+    parsed = None
+    if sync:  # chỉ dùng cho script: trả lỗi parse ngay trong response
+        try:
+            parsed = await asyncio.to_thread(parse_document, raw_bytes, filename)
+        except UnsupportedFileTypeError as exc:
+            raise HTTPException(status_code=415, detail=str(exc))
+        except ParsingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        if not parsed.blocks:
+            raise HTTPException(status_code=422, detail=_EMPTY_MESSAGE)
 
     doc_id = new_id()
     doc = Document(
-        id=doc_id, filename=filename, file_type=parsed.file_type,
+        id=doc_id, filename=filename, file_type=ext,
         num_chunks=0, status="processing", owner_id=user.id,
     )
     db.add(doc)
@@ -147,7 +184,7 @@ async def upload_document(
         db.refresh(doc)
         return {"document_id": doc.id, "num_chunks": doc.num_chunks, "status": doc.status, "filename": doc.filename}
 
-    background_tasks.add_task(_process_document_indexing, doc_id, str(user.id), parsed, filename)
+    background_tasks.add_task(_parse_and_index, doc_id, str(user.id), raw_bytes, filename)
     return {
         "document_id": doc.id, "num_chunks": 0, "status": "processing", "filename": doc.filename,
         "message": "Tài liệu đã được tải lên và đang được lập chỉ mục trong nền.",
@@ -187,7 +224,12 @@ def delete_document(document_id: str, user: User = Depends(get_current_user), db
 
 @router.get("")
 def list_documents(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    docs = db.query(Document).filter(Document.owner_id == user.id).order_by(Document.uploaded_at.desc()).all()
+    query = db.query(Document).filter(Document.owner_id == user.id)
+    if is_demo(user):  # tài khoản dùng thử thấy thêm bộ tài liệu công khai (chỉ đọc)
+        query = db.query(Document).filter(
+            (Document.owner_id == user.id) | Document.id.in_(public_demo_document_ids(db))
+        )
+    docs = query.order_by(Document.uploaded_at.desc()).all()
     return [
         {
             "id": str(d.id), "filename": d.filename, "file_type": d.file_type, "subject": d.subject,

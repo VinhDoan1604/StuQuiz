@@ -135,3 +135,5 @@ class RateLimiter:
 
 auth_limiter = RateLimiter("auth", lambda: settings.rate_limit_auth_per_minute)
 chat_limiter = RateLimiter("chat", lambda: settings.rate_limit_chat_per_minute)
+upload_limiter = RateLimiter("upload", lambda: settings.rate_limit_upload_per_minute)
+quiz_limiter = RateLimiter("quiz", lambda: settings.rate_limit_quiz_per_minute)

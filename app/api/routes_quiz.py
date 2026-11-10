@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.agents.quiz_summary_agent import generate_quiz
 from app.core.ownership import get_owned_space, resolve_owned_document_ids
+from app.core.quota import enforce_quiz_quota
+from app.core.rate_limit import quiz_limiter
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.memory.mastery_tracker import record_quiz_result
@@ -22,7 +24,7 @@ from app.utils.time import utcnow
 router = APIRouter()
 
 
-@router.post("/generate", response_model=list[QuizQuestionOut])
+@router.post("/generate", response_model=list[QuizQuestionOut], dependencies=[Depends(quiz_limiter)])
 async def generate(
     req: QuizGenerateRequest,
     user: User = Depends(get_current_user),
@@ -30,6 +32,7 @@ async def generate(
 ):
     if not req.document_ids:
         raise HTTPException(status_code=400, detail="Cần chọn ít nhất một tài liệu.")
+    enforce_quiz_quota(db, user, req.num_questions)
 
     doc_ids = resolve_owned_document_ids(db, user, req.document_ids, strict=True)
     space_id = str(get_owned_space(db, user, req.space_id).id) if req.space_id else None

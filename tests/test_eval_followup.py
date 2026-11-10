@@ -1,4 +1,4 @@
-"""Các thay đổi rút ra từ eval full-v1 (xem EVAL_FOLLOWUP.md): bật/tắt CRAG + critic,
+"""Các thay đổi rút ra từ eval full-v1 (xem eval/FOLLOWUP.md): bật/tắt CRAG + critic,
 critic chấm theo từng khẳng định, model riêng cho critic, retrieval dense/không rerank,
 prompt từ chối không gắn tiếng Việt. Không gọi mạng / model thật."""
 import asyncio

@@ -5,7 +5,7 @@ Seed dữ liệu demo cho StudyRAG (chỉ APP_ENV=dev):
 - 1 User học viên mẫu: student@studyrag.edu.vn / demo12345 (đã xác thực)
 - 1 Không gian học tập chứa 2 tài liệu mẫu
 - 2 Giáo trình chuyên sâu đã lập chỉ mục (Cấu trúc dữ liệu & RAG nâng cao)
-- 5 Bản ghi độ làm chủ kiến thức SuperMemo SM-2 (vững, yếu, chu kỳ ôn tập)
+- 5 Bản ghi độ làm chủ kiến thức (vững, yếu, lịch ôn kiểu Leitner)
 - 1 Phiên Chat mẫu hoàn chỉnh với CRAG reflection trace và trích dẫn chuẩn
 - Các lượt làm bài Quiz lịch sử
 

@@ -92,7 +92,7 @@ studyRAG/
 ├── migrations/            # Alembic
 ├── frontend/              # React + Vite (Dockerfile + nginx.conf để deploy)
 ├── eval/                  # Bộ đánh giá ablation (xem eval/README.md)
-├── scripts/               # init_db.py, seed_demo.py, test_graph.py
+├── scripts/               # init_db.py, seed_demo.py, bench_reranker.py, ...
 ├── tests/                 # pytest
 ├── Dockerfile             # image backend
 └── docker-compose.yml     # postgres + qdrant + redis + api + web

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     llm_chat_models: str = ""
     llm_timeout_seconds: int = 60
     llm_max_retries: int = 2
+    # Model dự phòng: thử 1 lần khi model chính lỗi (403/429/timeout...). Trống = không fallback.
+    fallback_model_provider: str = ""
+    fallback_model_name: str = ""
     # Judge cho eval/ (eval/judge.py). Biến môi trường cùng tên ghi đè giá trị trong .env.
     # Để trống -> dùng STRONG model (và báo cáo sẽ cảnh báo nếu trùng model sinh).
     eval_judge_provider: str = ""
@@ -93,9 +96,20 @@ class Settings(BaseSettings):
     redis_url: str | None = None
     rate_limit_auth_per_minute: int = 10
     rate_limit_chat_per_minute: int = 30
+    rate_limit_upload_per_minute: int = 5
+    rate_limit_quiz_per_minute: int = 5
+    # Hạn mức theo ngày (UTC), 0 = không giới hạn. Xem app/core/quota.py.
+    quota_chat_per_day: int = 100
+    quota_demo_chat_per_day: int = 20
+    quota_global_chat_per_day: int = 1000   # trần toàn hệ thống, chặn cháy túi khi public
+    quota_uploads_per_day: int = 20
+    quota_documents_per_user: int = 50
+    quota_quiz_questions_per_day: int = 200
+    demo_allow_upload: bool = True          # bản public nên đặt false
+    demo_owner_email: str = "public-demo@demo.studyrag.local"  # chủ của bộ tài liệu demo dùng chung
 
     # --- RAG ---
-    # Xem eval/results/full-v1/report.md và EVAL_FOLLOWUP.md cho số liệu đằng sau các mặc định.
+    # Xem eval/results/full-v1/report.md và eval/FOLLOWUP.md cho số liệu đằng sau các mặc định.
     # Retrieval: "hybrid" (dense + sparse, RRF) | "dense" (chỉ dense BGE-M3).
     # dense: ngang hybrid khi đã rerank (eval retrieval-v3: MRR 0.881 cả hai) và giữ chất lượng ở top-10.
     retrieval_mode: str = "dense"
@@ -104,6 +118,8 @@ class Settings(BaseSettings):
     # Số ứng viên đưa vào reranker (latency CPU tỉ lệ ~tuyến tính với số này).
     # 10: MRR không đổi so với 20 (dense_rerank, retrieval-v3) và nhanh ~1.7x.
     rerank_candidates: int = 10
+    # Nhiều truy vấn con: gộp ứng viên rồi rerank MỘT lần trên tối đa ngần này chunk.
+    rerank_pool_max: int = 20
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_max_length: int = 512
     # Lượng tử hoá động int8 (torch, chỉ áp khi chạy CPU) — nhanh hơn, không cần thêm thư viện.
@@ -113,7 +129,7 @@ class Settings(BaseSettings):
     # Số luồng CPU cho torch khi rerank; 0 = số nhân vật lý ước lượng (os.cpu_count() // 2).
     reranker_threads: int = 0
     # Chuẩn hoá truy vấn trước embed + rerank (mở rộng viết tắt, khôi phục dấu tiếng Việt).
-    # Không dùng LLM. Xem app/retrieval/query_normalizer.py và EVAL_FOLLOWUP.md mục 4.2.
+    # Không dùng LLM. Xem app/retrieval/query_normalizer.py và eval/FOLLOWUP.md mục 4.2.
     query_normalize: bool = True
     # CRAG (chấm context + viết lại truy vấn) và critic (chấm faithfulness + sinh lại).
     # Mặc định TẮT: dataset v1 chưa cho thấy lợi ích có ý nghĩa (hit@5 = 1.0 sẵn), trong khi
@@ -126,6 +142,8 @@ class Settings(BaseSettings):
     critic_model_name: str = ""
     max_reflection_loops: int = 2
     max_chat_message_chars: int = 4000
+    # Trần token cho lịch sử hội thoại đưa vào prompt (rolling summary + turn gần nhất).
+    chat_history_token_budget: int = 1000
     enable_parent_expansion: bool = True
     parent_context_max_tokens: int = 3500
     embedding_cache_size: int = 5000
@@ -138,6 +156,9 @@ class Settings(BaseSettings):
     ocr_lang: str = "vie+eng"
     # OCR chữ trong hình của slide (sơ đồ, bảng chụp). Tắt nếu cần upload nhanh.
     ocr_slide_images: bool = True
+    # Giới hạn để 1 file không chiếm CPU hàng chục phút. 0 = không giới hạn.
+    max_pdf_pages: int = 500
+    max_ocr_pages: int = 50
 
     @model_validator(mode="after")
     def _validate_non_dev(self):

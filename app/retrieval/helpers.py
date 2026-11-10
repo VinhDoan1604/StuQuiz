@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from app.retrieval.reranker import rerank
@@ -116,10 +117,13 @@ async def retrieve_top_k(
     hybrid_top_k: int | None = None,
     metadata_filter: dict | None = None,
     document_ids: list[str] | None = None,
+    rerank: bool = True,
 ) -> list[dict[str, Any]]:
     """Pipeline đầy đủ: embed -> search (RETRIEVAL_MODE, lấy `hybrid_top_k` ứng viên,
     mặc định RERANK_CANDIDATES) -> rerank (xuống top_k, nếu RERANK_ENABLED).
-    Dùng cho QA/teaching/quiz (cần độ liên quan cao với 1 query cụ thể)."""
+    Dùng cho QA/teaching/quiz (cần độ liên quan cao với 1 query cụ thể).
+
+    rerank=False: trả nguyên ứng viên để bên gọi gộp nhiều truy vấn rồi rerank một lần."""
     from app.config import settings
 
     if not query or not query.strip():
@@ -139,6 +143,8 @@ async def retrieve_top_k(
         return []
     if not settings.rerank_enabled:
         return candidates[:top_k]
+    if not rerank:
+        return candidates
 
     try:
         return await arerank(query, candidates, top_k=top_k)
@@ -169,8 +175,19 @@ def normalize_chunk(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_DOCUMENT_TAG = re.compile(r"<(/?)document", re.IGNORECASE)
+
+
+def _neutralize_tags(text: str) -> str:
+    """Không cho nội dung tài liệu tự đóng thẻ <document> để thoát khỏi vùng dữ liệu."""
+    return _DOCUMENT_TAG.sub(lambda m: f"&lt;{m.group(1)}document", text or "")
+
+
 def format_chunks_for_prompt(chunks: list[dict[str, Any]]) -> str:
-    """Định dạng list chunk thành block đánh số để đưa vào prompt cho LLM."""
+    """Định dạng list chunk thành block đánh số để đưa vào prompt cho LLM.
+
+    Mỗi chunk nằm trong thẻ <document>: ranh giới rõ giữa dữ liệu và chỉ thị
+    (xem UNTRUSTED_CONTEXT_RULE)."""
     if not chunks:
         return "(không có context nào được truy xuất)"
     blocks = []
@@ -180,5 +197,5 @@ def format_chunks_for_prompt(chunks: list[dict[str, Any]]) -> str:
             source += f", trang {c['page']}"
         if c.get("section"):
             source += f", mục \"{c['section']}\""
-        blocks.append(f"[{i}] ({source})\n{c.get('text', '')}")
+        blocks.append(f"<document>\n[{i}] ({_neutralize_tags(source)})\n{_neutralize_tags(c.get('text', ''))}\n</document>")
     return "\n\n".join(blocks)

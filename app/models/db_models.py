@@ -106,6 +106,7 @@ class ChatTurn(Base):
     content = Column(Text)
     # Reflection trace + citations của lượt trả lời (hiển thị lại khi mở lịch sử)
     reflection_trace = Column(JSON, nullable=True)
+    feedback = Column(Integer, nullable=True)   # đánh giá của người dùng: 1 = 👍, -1 = 👎
     created_at = Column(DateTime, default=utcnow)
 
     session = relationship("ChatSession", back_populates="turns")

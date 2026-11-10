@@ -213,6 +213,7 @@ def get_space_chat_history(
                         "content": t.content,
                         "intent": t.intent,
                         "reflection_trace": t.reflection_trace,
+                        "feedback": t.feedback,
                         "created_at": t.created_at.isoformat() if t.created_at else None,
                     }
                     for t in turns

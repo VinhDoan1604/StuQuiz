@@ -21,7 +21,7 @@ Ghi chú vận hành quan trọng:
   thành service riêng có GPU.
 - Các nút vặn đều nằm trong settings (RERANK_CANDIDATES, RERANKER_MODEL,
   RERANKER_MAX_LENGTH, RERANKER_INT8, RERANKER_DEVICE). Đo trước khi đổi:
-  `python -m scripts.bench_reranker` (xem EVAL_FOLLOWUP.md).
+  `python -m scripts.bench_reranker` (xem eval/FOLLOWUP.md).
 - RERANKER_INT8=true: torch dynamic quantization (nn.Linear -> qint8) trên CPU.
   Không cần ONNX/optimum; điểm số lệch nhẹ so với fp32 nên PHẢI đo lại
   retrieval (eval --retrieval-only) trước khi bật cho production.

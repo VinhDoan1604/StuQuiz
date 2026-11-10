@@ -1,0 +1,51 @@
+# Bản public trên 1 VPS, ghi đè docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build
+# Yêu cầu: domain trỏ về IP server, mở cổng 80/443, đặt DOMAIN trong .env (xem .env.prod.example).
+services:
+  postgres:
+    ports: !reset []
+    deploy:
+      resources:
+        limits: { memory: 512m }
+
+  qdrant:
+    ports: !reset []
+    deploy:
+      resources:
+        limits: { memory: 1g }
+
+  redis:
+    deploy:
+      resources:
+        limits: { memory: 128m }
+
+  api:
+    environment:
+      APP_ENV: prod
+      PRELOAD_MODELS: "true"
+    deploy:
+      resources:
+        limits:
+          memory: "${API_MEMORY_LIMIT:-6g}"
+
+  web:
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?Đặt DOMAIN trong .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

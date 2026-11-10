@@ -110,6 +110,7 @@ export type Intent = 'qa' | 'teaching' | 'quiz' | 'summary';
 
 export interface ChatResponse {
   session_id?: string | null;
+  turn_id?: string | null;
   intent: Intent;
   answer: string;
   citations: Citation[];
@@ -117,7 +118,8 @@ export interface ChatResponse {
 }
 
 export interface AgentStepEvent {
-  event: 'status' | 'step' | 'done' | 'error';
+  event: 'status' | 'step' | 'done' | 'error' | 'token';
+  text?: string;
   step?: string;
   node?: string;
   title?: string;
@@ -227,6 +229,7 @@ export interface ChatTurnItem {
   content: string;
   intent: Intent | null;
   reflection_trace: (ReflectionTrace & { citations?: Citation[] }) | null;
+  feedback?: number | null;
   created_at: string | null;
 }
 
@@ -275,8 +278,14 @@ export async function sendChatMessage(
   return res.json();
 }
 
+export async function rateTurn(turnId: string, rating: -1 | 0 | 1): Promise<void> {
+  const res = await authFetch(`/chat/turns/${turnId}/feedback`, jsonInit('POST', { rating }));
+  if (!res.ok) throw new Error(await errorDetail(res, 'Không gửi được đánh giá'));
+}
+
 export interface StreamHandlers {
   onStep: (event: AgentStepEvent) => void;
+  onToken?: (text: string) => void;
   onDone: (response: ChatResponse) => void;
   onError: (err: string) => void;
 }
@@ -284,7 +293,7 @@ export interface StreamHandlers {
 export async function streamChatMessage(
   sessionId: string,
   message: string,
-  { onStep, onDone, onError }: StreamHandlers,
+  { onStep, onToken, onDone, onError }: StreamHandlers,
   spaceId?: string,
   documentIds?: string[],
   model?: string
@@ -318,7 +327,9 @@ export async function streamChatMessage(
           console.warn('Không parse được SSE payload:', trimmed, e);
           continue;
         }
-        if (parsed.event === 'done' && parsed.response) {
+        if (parsed.event === 'token') {
+          onToken?.(parsed.text || '');
+        } else if (parsed.event === 'done' && parsed.response) {
           finished = true;
           onDone(parsed.response);
         } else if (parsed.event === 'error') {

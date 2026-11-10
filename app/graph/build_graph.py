@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any, AsyncGenerator, Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -32,6 +34,7 @@ from app.agents.retrieval_agent import run_retrieval
 from app.agents.state import GraphState
 from app.config import settings
 from app.db.session import SessionLocal
+from app.llm.router import begin_request_usage, current_request_usage
 from app.memory.chat_history import add_turn, get_or_create_session
 from app.memory.context_window import build_context, maybe_summarize
 from app.memory.mastery_tracker import get_weak_topics
@@ -52,6 +55,7 @@ async def orchestrator_node(state: GraphState) -> dict[str, Any]:
     return {
         "intent": result.get("intent", "qa"),
         "suggested_review_topic": result.get("suggested_review_topic"),
+        "standalone_query": result.get("standalone_query", ""),
     }
 
 
@@ -85,7 +89,11 @@ async def rewrite_query_node(state: GraphState) -> dict[str, Any]:
 async def generation_node(state: GraphState) -> dict[str, Any]:
     logger.info("LangGraph -> [generation] mode=%s", state.get("intent", "qa"))
     result = await run_generation(state)
-    return {"answer_draft": result.get("answer_draft", ""), "citations": result.get("citations", [])}
+    return {
+        "answer_draft": result.get("answer_draft", ""),
+        "citations": result.get("citations", []),
+        "generation_failed": bool(result.get("generation_failed", False)),
+    }
 
 
 async def grade_answer_node(state: GraphState) -> dict[str, Any]:
@@ -132,6 +140,9 @@ def route_after_retrieval(state: GraphState) -> Literal["quiz_summary", "grade_c
 
 def route_after_generation(state: GraphState) -> Literal["grade_answer", "accept_answer"]:
     # ENABLE_ANSWER_CRITIC=false: chấp nhận bản nháp, không chấm faithfulness / sinh lại.
+    # LLM đã lỗi thì không có gì để chấm: "bản nháp" chỉ là câu báo lỗi.
+    if state.get("generation_failed"):
+        return "accept_answer"
     return "grade_answer" if settings.enable_answer_critic else "accept_answer"
 
 
@@ -158,17 +169,33 @@ def route_after_grade_answer(state: GraphState) -> Literal["retry_generation", "
 # ---------------------------------------------------------------------------
 # 3. Compile
 # ---------------------------------------------------------------------------
+def _timed(name: str, fn: Callable[[GraphState], Awaitable[dict[str, Any]]]):
+    """Cộng dồn thời gian chạy của node vào số liệu của request (node lặp lại được cộng dồn)."""
+
+    async def wrapper(state: GraphState) -> dict[str, Any]:
+        start = time.perf_counter()
+        try:
+            return await fn(state)
+        finally:
+            usage = current_request_usage()
+            if usage is not None:
+                elapsed = round((time.perf_counter() - start) * 1000)
+                usage["nodes_ms"][name] = usage["nodes_ms"].get(name, 0) + elapsed
+
+    return wrapper
+
+
 def build_study_graph():
     wf = StateGraph(GraphState)
-    wf.add_node("orchestrator", orchestrator_node)
-    wf.add_node("retrieval", retrieval_node)
-    wf.add_node("grade_context", grade_context_node)
-    wf.add_node("rewrite_query", rewrite_query_node)
-    wf.add_node("generation", generation_node)
-    wf.add_node("grade_answer", grade_answer_node)
-    wf.add_node("retry_generation", retry_generation_node)
-    wf.add_node("accept_answer", accept_answer_node)
-    wf.add_node("quiz_summary", quiz_summary_node)
+    wf.add_node("orchestrator", _timed("orchestrator", orchestrator_node))
+    wf.add_node("retrieval", _timed("retrieval", retrieval_node))
+    wf.add_node("grade_context", _timed("grade_context", grade_context_node))
+    wf.add_node("rewrite_query", _timed("rewrite_query", rewrite_query_node))
+    wf.add_node("generation", _timed("generation", generation_node))
+    wf.add_node("grade_answer", _timed("grade_answer", grade_answer_node))
+    wf.add_node("retry_generation", _timed("retry_generation", retry_generation_node))
+    wf.add_node("accept_answer", _timed("accept_answer", accept_answer_node))
+    wf.add_node("quiz_summary", _timed("quiz_summary", quiz_summary_node))
 
     wf.add_edge(START, "orchestrator")
     wf.add_conditional_edges("orchestrator", route_after_orchestrator, {"retrieval": "retrieval"})
@@ -270,8 +297,9 @@ def _load_memory_sync(session_id: str, user_id: str, space_id: str | None, messa
     with SessionLocal() as db:
         try:
             get_or_create_session(db, session_id=session_id, user_id=user_id, space_id=space_id, first_message=message)
+            # Lấy lịch sử TRƯỚC khi lưu câu hỏi hiện tại, để câu hỏi không bị lặp trong chính lịch sử của nó.
+            summary = build_context(db, session_id=session_id, token_budget=settings.chat_history_token_budget)
             add_turn(db, session_id=session_id, role="user", content=message)
-            summary = build_context(db, session_id=session_id, token_budget=1000)
             weak = get_weak_topics(db, user_id=user_id, limit=5)
             mastery = {
                 "weak_topics": [
@@ -291,13 +319,14 @@ def _load_memory_sync(session_id: str, user_id: str, space_id: str | None, messa
     return summary, mastery
 
 
-def _save_assistant_turn_sync(session_id: str, response: dict[str, Any]) -> None:
-    trace = {**response["reflection"], "citations": response["citations"]}
+def _save_assistant_turn_sync(session_id: str, response: dict[str, Any], metrics: dict[str, Any]) -> str:
+    trace = {**response["reflection"], "citations": response["citations"], "metrics": metrics}
     with SessionLocal() as db:
-        add_turn(
+        turn = add_turn(
             db, session_id=session_id, role="assistant", content=response["answer"],
             intent=response["intent"], reflection_trace=trace,
         )
+        return str(turn.id)
 
 
 def _summarize_sync(session_id: str) -> None:
@@ -349,9 +378,23 @@ async def _prepare_state(
     }
 
 
-async def _persist(session_id: str, response: dict[str, Any]) -> None:
+def _finish_metrics(usage: dict[str, Any], started: float, session_id: str, intent: str) -> dict[str, Any]:
+    """Chốt số liệu của request và ghi 1 dòng log."""
+    metrics = {**usage, "total_ms": round((time.perf_counter() - started) * 1000)}
+    logger.info(
+        "chat_completed session=%s intent=%s total_ms=%d llm_calls=%d tokens_in=%d tokens_out=%d fallbacks=%d nodes_ms=%s",
+        session_id, intent, metrics["total_ms"], metrics["llm_calls"], metrics["tokens_in"],
+        metrics["tokens_out"], metrics["fallbacks"], metrics["nodes_ms"],
+    )
+    return metrics
+
+
+async def _persist(session_id: str, response: dict[str, Any], metrics: dict[str, Any], failed: bool = False) -> None:
+    """Lưu lượt trả lời. Câu báo lỗi của hệ thống không phải kiến thức nên không vào lịch sử."""
+    if failed:
+        return
     try:
-        await asyncio.to_thread(_save_assistant_turn_sync, session_id, response)
+        response["turn_id"] = await asyncio.to_thread(_save_assistant_turn_sync, session_id, response, metrics)
     except Exception as exc:
         logger.warning("Không lưu được lượt trả lời của trợ lý (%s).", exc)
         return
@@ -372,6 +415,7 @@ async def run_graph(
     if not message:
         return _greeting_response(session_id)
 
+    usage, started = begin_request_usage(), time.perf_counter()
     state = await _prepare_state(session_id, message, document_ids or [], space_id, user_id)
     try:
         final_state = await get_graph().ainvoke(state, config={"recursion_limit": 25})
@@ -380,7 +424,8 @@ async def run_graph(
         return _error_response(session_id)
 
     response = _build_response(session_id, final_state)
-    await _persist(session_id, response)
+    metrics = _finish_metrics(usage, started, session_id, response["intent"])
+    await _persist(session_id, response, metrics, failed=bool(final_state.get("generation_failed")))
     return response
 
 
@@ -432,11 +477,18 @@ async def stream_graph(
         return
 
     try:
+        usage, started = begin_request_usage(), time.perf_counter()
         yield _sse({"event": "status", "step": "init", "message": "Đang nạp bộ nhớ hội thoại..."})
         state = await _prepare_state(session_id, message, document_ids or [], space_id, user_id)
+        state["stream_tokens"] = True
 
         accumulated: dict[str, Any] = dict(state)
-        async for chunk in get_graph().astream(state, stream_mode="updates", config={"recursion_limit": 25}):
+        async for mode, chunk in get_graph().astream(
+            state, stream_mode=["updates", "custom"], config={"recursion_limit": 25}
+        ):
+            if mode == "custom":
+                yield _sse(chunk)
+                continue
             for node_name, node_output in chunk.items():
                 accumulated.update(node_output)
                 event = _step_event(node_name, node_output)
@@ -444,7 +496,8 @@ async def stream_graph(
                     yield _sse(event)
 
         response = _build_response(session_id, accumulated)
-        await _persist(session_id, response)
+        metrics = _finish_metrics(usage, started, session_id, response["intent"])
+        await _persist(session_id, response, metrics, failed=bool(accumulated.get("generation_failed")))
         yield _sse({"event": "done", "response": response})
     except Exception:
         # Không trả chi tiết exception cho client (có thể lộ cấu hình/nội bộ).

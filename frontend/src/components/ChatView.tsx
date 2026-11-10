@@ -5,11 +5,14 @@ import {
   Plus,
   PanelLeft,
   Loader2,
-  FileText
+  FileText,
+  ThumbsUp,
+  ThumbsDown
 } from 'lucide-react';
 import {
   fetchChatModels,
   newSessionId,
+  rateTurn,
   streamChatMessage,
   type ChatModelItem,
   type ChatResponse,
@@ -43,6 +46,8 @@ interface Message {
   citations?: Citation[];
   reflection?: ReflectionTrace | null;
   liveEvents?: AgentStepEvent[];
+  turnId?: string | null;
+  feedback?: number | null;
 }
 
 // [n] -> link nội bộ #cite-n (bỏ qua [n](...) đã là link markdown)
@@ -64,6 +69,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [liveEvents, setLiveEvents] = useState<AgentStepEvent[]>([]);
+  const [streamingText, setStreamingText] = useState('');
   const [sessionId, setSessionId] = useState<string>(newSessionId);
 
   // Citation Viewer Drawer
@@ -101,7 +107,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, liveEvents]);
+  }, [messages, liveEvents, streamingText]);
+
+  const handleRate = async (msg: Message, rating: -1 | 1) => {
+    if (!msg.turnId) return;
+    const next = msg.feedback === rating ? 0 : rating;
+    const setFeedback = (value: number | null) =>
+      setMessages(prev => prev.map(m => (m.id === msg.id ? { ...m, feedback: value } : m)));
+    const previous = msg.feedback ?? null;
+    setFeedback(next || null);
+    try {
+      await rateTurn(msg.turnId, next);
+    } catch {
+      setFeedback(previous);
+    }
+  };
 
   const handleSend = async (customMessage?: string) => {
     const textToSend = customMessage || input;
@@ -117,6 +137,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setInput('');
     setIsStreaming(true);
     setLiveEvents([]);
+    setStreamingText('');
 
     const assistantMsgId = 'msg_ast_' + Date.now();
     let currentLiveEvents: AgentStepEvent[] = [];
@@ -127,8 +148,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         currentLiveEvents = [...currentLiveEvents, event];
         setLiveEvents([...currentLiveEvents]);
       },
+      onToken: (text: string) => setStreamingText(prev => prev + text),
       onDone: (doneRes: ChatResponse) => {
         setIsStreaming(false);
+        setStreamingText('');
         if (doneRes.session_id) setSessionId(doneRes.session_id);
         const assistantMsg: Message = {
           id: assistantMsgId,
@@ -137,6 +160,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           citations: doneRes.citations,
           reflection: doneRes.reflection,
           liveEvents: currentLiveEvents,
+          turnId: doneRes.turn_id,
         };
         setMessages(prev => [...prev, assistantMsg]);
         setLiveEvents([]);
@@ -148,6 +172,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       },
       onError: (err: string) => {
         setIsStreaming(false);
+        setStreamingText('');
         const errorMsg: Message = {
           id: assistantMsgId,
           role: 'assistant',
@@ -176,6 +201,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         content: t.content,
         citations: t.reflection_trace?.citations || [],
         reflection: t.role === 'assistant' ? t.reflection_trace : null,
+        turnId: t.role === 'assistant' ? t.id : null,
+        feedback: t.feedback ?? null,
       }));
       setMessages(restored);
     } else {
@@ -443,6 +470,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
                 )}
 
+                {/* Đánh giá của người dùng */}
+                {msg.role === 'assistant' && msg.turnId && (
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
+                    <button className="btn-ghost" style={{ padding: '4px', color: msg.feedback === 1 ? 'var(--primary)' : undefined }} onClick={() => handleRate(msg, 1)} title="Câu trả lời hữu ích" aria-pressed={msg.feedback === 1}>
+                      <ThumbsUp size={13} />
+                    </button>
+                    <button className="btn-ghost" style={{ padding: '4px', color: msg.feedback === -1 ? 'var(--primary)' : undefined }} onClick={() => handleRate(msg, -1)} title="Câu trả lời chưa tốt" aria-pressed={msg.feedback === -1}>
+                      <ThumbsDown size={13} />
+                    </button>
+                  </div>
+                )}
+
                 {/* Reflection Timeline */}
                 {(msg.reflection || (msg.liveEvents && msg.liveEvents.length > 0)) && (
                   <div style={{ width: '100%' }}>
@@ -456,8 +495,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
             ))}
 
+            {/* Câu trả lời đang được sinh */}
+            {isStreaming && streamingText && (
+              <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: '16px 20px', fontSize: '14.5px', lineHeight: '1.65', boxShadow: 'var(--shadow-sm)' }}>
+                <div className="markdown-body">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
+                </div>
+              </div>
+            )}
+
             {/* Streaming Indicator */}
-            {isStreaming && (
+            {isStreaming && !streamingText && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '13px', padding: '8px 0' }}>
                 <Loader2 size={15} className="animate-spin" color="var(--primary)" />
                 <span>Đang tra cứu tài liệu và đối soát câu trả lời...</span>

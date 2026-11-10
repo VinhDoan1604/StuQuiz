@@ -28,7 +28,7 @@ from typing import Any
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.agents.constants import FINAL_TOP_K_BROAD
+from app.agents.constants import FINAL_TOP_K_BROAD, UNTRUSTED_CONTEXT_RULE
 from app.agents.quiz_topics import build_section_topics, prioritize_topics
 from app.agents.state import GraphState
 from app.llm.utils import LLMCallError, acall_llm_text, acall_structured
@@ -71,13 +71,13 @@ CHỈ dựa vào context được cung cấp. Mỗi câu hỏi có:
 - `topic`: dùng ĐÚNG chuỗi chủ đề được cho trong prompt, không tự đổi.
 
 TUYỆT ĐỐI KHÔNG lặp lại (dù diễn đạt khác đi) các câu đã liệt kê ở mục
-"Câu hỏi cũ cần tránh trùng" nếu có."""
+"Câu hỏi cũ cần tránh trùng" nếu có.""" + UNTRUSTED_CONTEXT_RULE
 
 _SUMMARY_SYSTEM_PROMPT = """Bạn là trợ lý tóm tắt tài liệu học thuật.
 Tóm tắt CHỈ dựa vào context được cung cấp, giữ CẤU TRÚC PHÂN CẤP theo
 heading/mục nếu context có chỉ ra (dùng markdown ## cho mục lớn, - cho ý
 con). KHÔNG chỉ nối câu — phải tổng hợp, cô đọng, giữ đúng thông tin quan
-trọng nhất (định nghĩa, công thức, kết luận chính)."""
+trọng nhất (định nghĩa, công thức, kết luận chính).""" + UNTRUSTED_CONTEXT_RULE
 
 _REDUCE_SYSTEM_PROMPT = """Bạn nhận được nhiều bản tóm tắt TỪNG PHẦN của
 CÙNG 1 tài liệu (do tài liệu quá dài phải tóm tắt theo từng đoạn riêng).

@@ -13,6 +13,7 @@ build_context / maybe_summarize — Quản lý context window thông minh cho ch
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -33,10 +34,25 @@ SUMMARIZE_TRIGGER_TURNS = 10
 # tại, retrieved context...) khi build_context tính budget riêng cho lịch sử chat.
 _SAFETY_MARGIN_TOKENS = 50
 
+# Trần token của MỖI câu trả lời cũ khi đưa vào prompt.
+_ASSISTANT_TURN_MAX_TOKENS = 250
+_CITATION_MARK = re.compile(r"\s*\[\d+\]")
 
-def _format_turn(turn: ChatTurn) -> str:
-    role_label = "Người dùng" if turn.role == "user" else "Trợ lý"
-    return f"{role_label}: {turn.content}"
+
+def _compact_answer(text: str) -> str:
+    """Rút gọn câu trả lời cũ: bỏ số trích dẫn (số [n] của lượt trước không còn ý nghĩa, dễ
+    làm model trích nhầm) và cắt bớt để câu trả lời dài không chiếm hết ngân sách lịch sử."""
+    cleaned = _CITATION_MARK.sub("", text or "").strip()
+    tokens = count_tokens(cleaned)
+    if tokens <= _ASSISTANT_TURN_MAX_TOKENS:
+        return cleaned
+    return cleaned[: int(len(cleaned) * _ASSISTANT_TURN_MAX_TOKENS / tokens)].rstrip() + " …"
+
+
+def _format_turn(turn: ChatTurn, compact: bool = False) -> str:
+    if turn.role == "user":
+        return f"Người dùng: {turn.content}"
+    return f"Trợ lý: {_compact_answer(turn.content) if compact else turn.content}"
 
 
 def _covered_turn_count(session: ChatSession) -> int:
@@ -88,7 +104,7 @@ def build_context(db: Session, session_id: str, token_budget: int) -> str:
         turn_lines: list[str] = []
         used_tokens = 0
         for turn in recent_turns_desc:  # từ mới nhất -> ưu tiên giữ turn gần hiện tại khi phải cắt
-            line = _format_turn(turn)
+            line = _format_turn(turn, compact=True)
             line_tokens = count_tokens(line)
             if used_tokens + line_tokens > remaining_budget:
                 break

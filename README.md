@@ -13,11 +13,15 @@
 
 🇻🇳 Bản tiếng Việt: [README.vi.md](README.vi.md)
 
-<!-- TODO(Vinh): replace with a real GIF (upload → ask → reflection timeline → citation click → quiz).
-     Record with ScreenToGif / OBS, keep it < 10 MB, save as assets/demo.gif, then uncomment:
-<p align="center"><img src="assets/demo.gif" alt="StudyRAG demo" width="820"/></p>
--->
+---
 
+## The short version
+
+I built the full agentic pipeline (corrective RAG, self-critic, hybrid search), then measured every
+component with an ablation harness. **Only the reranker earned its cost.** CRAG and the critic used
+3–4× the tokens with no measurable quality gain, and sparse retrieval added nothing once reranking
+was on, so production runs the simpler pipeline: dense search, cross-encoder rerank, one generation.
+The expensive paths are still in the code behind flags, and the numbers are below.
 
 ---
 
@@ -30,20 +34,22 @@ bot has three problems on this kind of material:
 2. **You can't verify it** — no pointer back to the slide or page.
 3. **It doesn't help you remember** — every session starts from zero.
 
-StudyRAG addresses each one explicitly: a **Corrective-RAG + Self-RAG reflection loop** grades the
-retrieved context *before* generation and the answer's faithfulness *after* it; every answer carries
-**clickable citations** to the source chunk; and a **server-graded quiz + spaced-review tracker**
-keeps a per-topic mastery score.
+StudyRAG addresses each one explicitly: answers are constrained to retrieved context and refuse when
+it is missing (12/12 correct refusals on near-miss questions); every answer carries **clickable
+citations** to the source chunk; and a **server-graded quiz + spaced-review tracker** keeps a
+per-topic mastery score.
 
 ## Key features
 
 | | |
 |---|---|
-| 🔁 **Reflection loop (CRAG + Self-RAG)** | Grade context → rewrite query & re-retrieve if insufficient → generate → critic checks faithfulness → regenerate with feedback. Bounded by `MAX_REFLECTION_LOOPS`; forced acceptances are flagged in the trace, not hidden. |
-| 🔎 **Hybrid retrieval** | BGE-M3 dense (1024-d) + learned sparse vectors in one Qdrant collection, fused with RRF, then `bge-reranker-v2-m3` cross-encoder, then child→parent chunk expansion. |
+| 🔎 **Measured retrieval** | BGE-M3 dense search → `bge-reranker-v2-m3` cross-encoder → child→parent expansion. Sparse/RRF stays available with `RETRIEVAL_MODE=hybrid`. Rule-based normalization handles Vietnamese abbreviations and missing diacritics. |
+| 🔁 **Optional reflection loop** | CRAG + Self-RAG behind `ENABLE_CRAG` / `ENABLE_ANSWER_CRITIC`, off by default because evaluation showed no gain. Bounded loops; forced acceptances are flagged in the trace. |
 | 🧭 **Intent routing** | Orchestrator classifies `qa / teaching / quiz / summary`; teaching mode explains step by step instead of just answering. |
-| 📡 **Live reasoning trace** | `/chat/stream` (SSE) streams each graph step; the React UI renders it as a timeline with context/answer scores and rewritten queries. |
-| 🧠 **Memory** | Token-budgeted context window + rolling summary (summarised in the background after the response) + weak-topic injection from mastery records. |
+| 📡 **Streaming** | `/chat/stream` (SSE) streams each graph step and the answer token by token. |
+| 🧠 **Conversation context** | Token-budgeted history (rolling summary + recent turns, old citations stripped) reaches the generator. Follow-ups are rewritten into standalone questions inside the intent call, so it adds no LLM call. |
+| 🛡️ **Guardrails** | Retrieved text is fenced as data against prompt injection, with per-user and global daily quotas, upload/OCR limits and an LLM fallback provider. |
+| 📈 **LLMOps** | Latency per graph node, tokens and fallbacks are stored with every answer; 👍/👎 feedback; `scripts/usage_report.py` summarises them; optional LangSmith tracing. |
 | 📝 **Quiz & mastery** | Answers never leave the server before grading; mastery score (asymmetric +10 / −15) and a Leitner-style review schedule (1 → 3 → 7 → 14 days). |
 | 💸 **Cost-aware LLM routing** | Cheap model for rewrite/decompose/grade/qa, strong model for teaching/quiz/summary; provider-agnostic (Gemini, OpenAI, Anthropic). Token usage tracked per task via callbacks. |
 | 🇻🇳 **Vietnamese-ready ingestion** | PDF (PyMuPDF → pypdf fallback → Tesseract `vie` OCR for scans), DOCX, PPTX, TXT, MD; Unicode NFC normalisation; heading-aware semantic chunking. |
@@ -55,18 +61,18 @@ flowchart TD
     User([Student]) -->|SSE /chat/stream| Orchestrator[Orchestrator<br/>intent: qa / teaching / quiz / summary]
 
     subgraph "LangGraph StateGraph"
-        Orchestrator --> Retrieval[Retrieval Agent<br/>BGE-M3 dense+sparse · RRF · rerank · parent expansion]
-        Retrieval -->|qa / teaching| GradeContext{Grade context}
+        Orchestrator --> Retrieval[Retrieval Agent<br/>BGE-M3 dense · rerank · parent expansion]
+        Retrieval -->|qa / teaching| Generation[Generation Agent<br/>answer + citations]
         Retrieval -->|quiz / summary| QuizSummary[Quiz & Summary Agent]
+        Generation --> Accept[Accept + trace]
 
-        GradeContext -->|insufficient & budget left| RewriteQuery[Rewrite query]
-        RewriteQuery --> Retrieval
-        GradeContext -->|sufficient / budget spent| Generation[Generation Agent<br/>answer + citations]
-
-        Generation --> GradeAnswer{Critic: faithfulness}
-        GradeAnswer -->|unfaithful & budget left| RetryGen[Regenerate with feedback]
-        RetryGen --> Generation
-        GradeAnswer -->|faithful / budget spent| Accept[Accept + reflection trace]
+        Retrieval -. ENABLE_CRAG .-> GradeContext{Grade context}
+        GradeContext -. insufficient .-> RewriteQuery[Rewrite query]
+        RewriteQuery -.-> Retrieval
+        GradeContext -. sufficient .-> Generation
+        Generation -. ENABLE_ANSWER_CRITIC .-> GradeAnswer{Critic: faithfulness}
+        GradeAnswer -. unfaithful .-> Generation
+        GradeAnswer -. faithful .-> Accept
     end
 
     Accept --> Memory[(Chat history · rolling summary<br/>Mastery · spaced review)]
@@ -80,27 +86,27 @@ flowchart TD
 | :--- | :--- |
 | API | FastAPI, SSE, JWT (HS256), argon2id, Google Sign-In, email OTP, Redis-backed rate limiting |
 | Orchestration | LangGraph `StateGraph` ([`app/graph/build_graph.py`](app/graph/build_graph.py)), LangChain Core |
-| Models | Gemini / OpenAI / Anthropic via [`app/llm/router.py`](app/llm/router.py); BGE-M3; bge-reranker-v2-m3 |
+| Models | Gemini / OpenAI / Anthropic via [`app/llm/router.py`](app/llm/router.py) with fallback; self-hosted BGE-M3 and bge-reranker-v2-m3 |
 | Storage | PostgreSQL 16 + Alembic migrations; Qdrant |
 | Frontend | React 19 + Vite + TypeScript, served by nginx |
-| Ops | Docker Compose (postgres · qdrant · redis · api · web), GitHub Actions CI, `/health` + `/ready`, JSON logs with `X-Request-ID` |
+| Ops | Docker Compose (postgres · qdrant · redis · api · web, Caddy for HTTPS in production), GitHub Actions CI, `/health` + `/ready`, JSON logs with `X-Request-ID` |
 
 ## Design decisions & trade-offs
 
-- **Why a reflection loop instead of naive RAG?** Course material is dense and terminology-heavy;
-  the first retrieval is often near-miss. Grading context *before* generating is cheaper than
-  generating and then failing the critic. The loop is capped, and the trace records whether a
-  grade was actually computed (`*_verified`) or the answer was accepted because the budget ran out
-  (`*_forced`) — so the UI never claims a check that didn't happen.
-- **Why BGE-M3 sparse instead of BM25/Elasticsearch?** One model produces both dense and lexical
-  vectors, so hybrid search lives in a single Qdrant collection with no extra search engine to run.
-  It is also multilingual, which matters for Vietnamese + English mixed slides.
+- **Why is the reflection loop off by default?** I expected it to be the headline feature. On 33
+  hard questions it produced identical correctness at 3–4× the tokens, so it became opt-in. When
+  enabled, the trace records whether a grade was computed (`*_verified`) or the answer was accepted
+  because the budget ran out (`*_forced`), so the UI never claims a check that didn't happen.
+- **Why self-host embeddings and the reranker while calling an LLM API?** Generation is where a hosted
+  model is worth paying for; embeddings and reranking run on every document and question, and BGE
+  handles mixed Vietnamese/English well. The cost shows up in deployment: see below.
 - **Why parent/child chunks?** Small child chunks retrieve precisely; the parent section is what
   the LLM reads, so answers don't lose surrounding definitions.
 - **Why a cheap/strong router?** Grading and rewriting are short classification-style calls that run
   several times per question; routing them to a cheaper model keeps the loop affordable.
-- **Known cost:** the full loop makes more LLM calls and adds latency vs. single-shot RAG. The
-  evaluation below is designed to measure whether that cost buys accuracy.
+- **Why rewrite follow-ups inside the intent call?** It needs conversation history anyway, so a
+  second field costs no extra round trip. The previous pronoun regex caught 2 of 15 follow-ups;
+  this catches 15 of 15.
 
 ## Evaluation
 
@@ -173,6 +179,34 @@ retrieval); `full` was within 0.03 on every metric in `full-v1`.
 - **Correct refusal is 11/11 for every config** — the unanswerable set is too easy to discriminate
   between configs (ceiling effect).
 
+### After `full-v1`
+
+Those results drove the current defaults. The details are in [`eval/FOLLOWUP.md`](eval/FOLLOWUP.md).
+
+| Finding | Evidence |
+|---|---|
+| CRAG/critic give no gain on hard questions | 33 student-style and near-miss questions: correctness 0.929 for all three configs, at 1.0 / 3.5 / 4.4 LLM calls |
+| Rerank latency cut without losing quality | p50 37–43 s → 13.0 s (dense, top-10, thread fix) → 8.4 s (int8, max length 384), MRR 0.846–0.854 on 58 answerable questions |
+| Informal phrasing is the hard case | MRR 0.881 on clean questions vs. 0.763 on abbreviated, undiacritized ones |
+| Follow-up handling | 15/15 follow-ups rewritten to the right topic; the old regex caught 2/15 |
+| Intent classifier | 34/36 correct, 95 % CI 0.82–0.98 |
+| Prompt injection | 13/20 → 0/20 attacks succeeded (10 hand-written patterns × 2 runs, one model) |
+
+## Preparing for deployment
+
+Not hosted yet. These findings come from running the production image locally, including under a
+VPS-like cap of 2 CPUs and 3 GB:
+
+- **The LLM API is the easy part; the self-hosted models are not.** The API image is 2.9 GB, the
+  container peaked at 2.5 GB of RAM, and the first request after boot took about a minute because
+  models load lazily (`PRELOAD_MODELS=true` moves that to startup).
+- **CPU, not memory, is the limit.** Retrieval took 8–13 s on the dev machine and 38–57 s capped at 2
+  CPUs. The production config uses int8 quantization and a shorter max length to reduce this.
+- **Proxies break defaults.** Behind Caddy every user would share one IP and one rate limit until
+  nginx was told to trust the Docker network's `X-Forwarded-For`, and gzip has to be off for the SSE route.
+
+Production files: [`docker-compose.prod.yml`](docker-compose.prod.yml), [`deploy/`](deploy/), [`.env.prod.example`](.env.prod.example).
+
 ## Security & data isolation
 
 - Every route except login requires a JWT; identity always comes from the token, never the body.
@@ -181,6 +215,7 @@ retrieval); `full` was within 0.03 on every metric in `full-v1`.
 - Vector search **requires** a verified `doc_id` list — no collection-wide queries.
 - Quiz answers are never sent to the client before server-side grading.
 - OTPs are stored as HMAC, with attempt limits, expiry and resend cooldown.
+- Demo accounts read a shared public document set; write and delete still require ownership.
 
 ## Quick start (Docker)
 
@@ -218,7 +253,7 @@ cd frontend && npm install && npm run dev              # http://localhost:5173
 ## Tests & quality
 
 ```bash
-pytest -q                                  # 107 tests: API, auth isolation, graph routing, memory, quiz, rate limit — no LLM/Qdrant needed
+pytest -q                                  # 145 tests: API, auth isolation, graph routing, memory, quiz, quotas, streaming — no LLM/Qdrant needed
 ruff check app tests migrations scripts
 cd frontend && npm run lint && npm run build
 ```
@@ -269,7 +304,9 @@ migrations/      Alembic          tests/  pytest
   because it reranks the top 20).
 - Auto-generated eval questions share vocabulary with the source, which makes retrieval look easier
   than real student questions; the dataset is being extended with hand-written paraphrases.
-- Indexing runs in-process; a task queue would be needed for many concurrent uploads.
+- Answer quality has not been re-measured since the prompt-injection changes (see `eval/FOLLOWUP.md`, section 5).
+- All v2 questions were drafted by an AI and reviewed by the author; none are real student queries yet.
+- Indexing runs in a single in-process slot; a task queue would be needed for many concurrent uploads.
 - One worker per container because models live in process memory; scale out horizontally.
 
 See [ROADMAP.md](ROADMAP.md) for what's done and what's next.
@@ -277,6 +314,8 @@ See [ROADMAP.md](ROADMAP.md) for what's done and what's next.
 ## Author
 
 **Đoàn Công Vinh** — Computer Science, Ho Chi Minh City University of Technology (HCMUT) ·
-[GitHub](https://github.com/VinhDoan1604) <!-- TODO(Vinh): add LinkedIn / email -->
+[GitHub](https://github.com/VinhDoan1604)
 
-<!-- TODO(Vinh): choose a license (e.g. MIT) and add LICENSE; until then all rights reserved. -->
+## License
+
+[AGPL-3.0](LICENSE), matching the PyMuPDF dependency.

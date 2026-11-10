@@ -60,6 +60,30 @@ class UsageMetrics:
 _GLOBAL_USAGE = UsageMetrics()
 _USAGE_LOCK = threading.Lock()
 
+# Số liệu của request hiện tại. ContextVar giữ một dict dùng chung: các node LangGraph chạy trong
+# bản sao context nhưng vẫn ghi vào cùng dict này.
+_REQUEST_USAGE: ContextVar[dict[str, Any] | None] = ContextVar("llm_request_usage", default=None)
+
+
+def begin_request_usage() -> dict[str, Any]:
+    """Bắt đầu đo một request: lời gọi LLM, token, số lần fallback, thời gian từng node."""
+    usage: dict[str, Any] = {
+        "llm_calls": 0, "tokens_in": 0, "tokens_out": 0, "fallbacks": 0, "by_task": {}, "nodes_ms": {},
+    }
+    _REQUEST_USAGE.set(usage)
+    return usage
+
+
+def current_request_usage() -> dict[str, Any] | None:
+    return _REQUEST_USAGE.get()
+
+
+def record_fallback() -> None:
+    usage = _REQUEST_USAGE.get()
+    if usage is not None:
+        with _USAGE_LOCK:
+            usage["fallbacks"] += 1
+
 
 def get_cumulative_usage() -> dict[str, Any]:
     """Tổng token và độ trễ tích luỹ (phục vụ eval/)."""
@@ -146,6 +170,14 @@ class UsageTrackingCallbackHandler(BaseCallbackHandler):
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
             })
+            request_usage = _REQUEST_USAGE.get()
+            if request_usage is not None:
+                request_usage["llm_calls"] += 1
+                request_usage["tokens_in"] += prompt_tokens
+                request_usage["tokens_out"] += completion_tokens
+                per_task = request_usage["by_task"].setdefault(self.task, {"calls": 0, "latency_ms": 0})
+                per_task["calls"] += 1
+                per_task["latency_ms"] += round(latency_ms)
 
         logger.info(
             "LLM call: task=%s | model=%s | latency=%.0fms | tokens in=%d out=%d total=%d",
@@ -203,6 +235,18 @@ def get_llm(task: TaskType, streaming: bool = False) -> BaseChatModel:
     return _build_llm(task, streaming, provider.strip().lower(), model_name)
 
 
+def get_fallback_llm(task: TaskType, streaming: bool = False) -> BaseChatModel | None:
+    """Model dự phòng (FALLBACK_MODEL_*); None nếu chưa cấu hình hoặc thiếu API key."""
+    provider, model_name = settings.fallback_model_provider.strip().lower(), settings.fallback_model_name.strip()
+    if not provider or not model_name:
+        return None
+    try:
+        return _build_llm(task, streaming, provider, model_name)
+    except ValueError as exc:
+        logger.warning("Không dựng được model dự phòng: %s", exc)
+        return None
+
+
 @lru_cache(maxsize=64)
 def _build_llm(task: TaskType, streaming: bool, provider: str, model_name: str) -> BaseChatModel:
     spec = get_provider(provider)
@@ -213,6 +257,8 @@ def _build_llm(task: TaskType, streaming: bool, provider: str, model_name: str) 
         "max_retries": settings.llm_max_retries,
         "callbacks": [UsageTrackingCallbackHandler(task=task, model_name=f"{spec.name}:{model_name}")],
     }
+    if streaming and spec.protocol == "openai":
+        common["stream_usage"] = True  # không bật thì OpenAI không trả số token khi stream
     if task == "critic" and spec.protocol == "anthropic":
         common["max_tokens"] = 4096  # danh sách claim dài; mặc định langchain-anthropic dễ cắt cụt tool call
     return build_chat_model(spec, model_name, common)

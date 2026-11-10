@@ -101,6 +101,14 @@ def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
     return deduped
 
 
+def _round_robin(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Trộn xen kẽ kết quả các truy vấn con để khi cắt pool mỗi truy vấn đều còn đại diện."""
+    merged: list[dict[str, Any]] = []
+    for rank in range(max((len(g) for g in groups), default=0)):
+        merged.extend(g[rank] for g in groups if rank < len(g))
+    return merged
+
+
 def _extract_weak_topic_names(state: GraphState) -> list[str]:
     mastery_context = state.get("mastery_context") or {}
     weak_topics = mastery_context.get("weak_topics") or []
@@ -136,7 +144,10 @@ async def run_retrieval(state: GraphState) -> GraphState:
         main_query = await _reformulate_for_crag(user_query, crag_feedback)
         logger.info("run_retrieval: CRAG retry, query mới = '%s'", main_query)
     elif user_query:
-        main_query = await rewrite_query(user_query, chat_history_summary)
+        # Orchestrator đã viết lại câu nối tiếp trong cùng lời gọi phân loại; nó lỗi thì dùng regex đại từ.
+        main_query = (state.get("standalone_query") or "").strip() or await rewrite_query(
+            user_query, chat_history_summary
+        )
     else:
         main_query = ""
 
@@ -164,12 +175,18 @@ async def run_retrieval(state: GraphState) -> GraphState:
     else:
         search_queries = []
 
-    all_candidates: list[dict[str, Any]] = []
+    # Nhiều truy vấn con: chỉ search từng truy vấn, gộp lại rồi rerank MỘT lần ở dưới
+    # (rerank CPU ~1s/cặp, rerank từng truy vấn rồi rerank lại là trả tiền hai lần).
+    multi_query = len(search_queries) > 1
+    per_query: list[list[dict[str, Any]]] = []
     for q in search_queries:
         # Số ứng viên trước rerank = RERANK_CANDIDATES (settings), nhưng không ít hơn final_top_k.
         n_candidates = max(settings.rerank_candidates, final_top_k)
-        hits = await retrieve_top_k(q, top_k=final_top_k, hybrid_top_k=n_candidates, document_ids=document_ids)
-        all_candidates.extend(normalize_chunk(h) for h in hits)
+        hits = await retrieve_top_k(
+            q, top_k=final_top_k, hybrid_top_k=n_candidates, document_ids=document_ids, rerank=not multi_query
+        )
+        per_query.append([normalize_chunk(h) for h in hits])
+    all_candidates = _round_robin(per_query)
 
     # Fallback: search không ra kết quả nào nhưng có tài liệu trong phạm vi (vd câu hỏi
     # quá chung chung) -> lấy trực tiếp chunk đầu của các tài liệu đó.
@@ -185,7 +202,8 @@ async def run_retrieval(state: GraphState) -> GraphState:
     pool = _dedupe_candidates(all_candidates)
     rerank_query = main_query or (search_queries[0] if search_queries else "")
 
-    if settings.rerank_enabled and len(search_queries) > 1 and len(pool) > final_top_k and rerank_query:
+    if settings.rerank_enabled and multi_query and pool and rerank_query:
+        pool = pool[: max(settings.rerank_pool_max, final_top_k)]
         try:
             pool = await arerank(rerank_query, pool, top_k=final_top_k)
         except Exception as exc:

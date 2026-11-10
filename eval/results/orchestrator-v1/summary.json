@@ -1,0 +1,25 @@
+{
+  "intent_accuracy": 0.9444444444444444,
+  "intent_correct": 34,
+  "intent_n": 36,
+  "intent_ci95": [
+    0.8185502589238879,
+    0.9846303362329331
+  ],
+  "intent_errors": [
+    {
+      "true": "qa",
+      "predicted": "teaching",
+      "count": 2
+    }
+  ],
+  "followup_pass": 15,
+  "followup_n": 15,
+  "followup_ci95": [
+    0.7961107336956521,
+    1.0
+  ],
+  "standalone_kept": 5,
+  "standalone_n": 5,
+  "old_regex_would_rewrite": 2
+}
