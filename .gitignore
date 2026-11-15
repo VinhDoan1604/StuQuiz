@@ -51,3 +51,10 @@ eval/raw_corpus/
 ci.db
 *.db.bak*
 backups/
+
+# OCR/VLM eval images: rendered from eval/corpus (some files may not be redistributed) or
+# private photos/scans; rebuild with scripts/prepare_visual_eval.py
+eval/data/ocr/
+
+# Local assistant notes
+CLAUDE.md
