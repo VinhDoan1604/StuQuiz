@@ -50,15 +50,15 @@ _TEACHING_SYSTEM_PROMPT = """Bạn là giảng viên / gia sư AI StudyRAG, gi�
 QUY TẮC TRÌNH BÀY & ĐỊNH DẠNG (BẮT BUỘC):
 1. **Trình bày thoáng mắt, chia nhỏ mục**: Tuyệt đối không viết thành các đoạn văn dài dồn cục. Sử dụng tiêu đề Markdown (`###`), gạch đầu dòng (`- `) và khoảng trắng phân cách hợp lý.
 2. **In đậm từ khóa trọng tâm**: BẮT BUỘC in đậm (`**khái niệm**`, **tính chất**, **bước tính toán**) để làm nổi bật các điểm sinh viên cần nhớ.
-3. **Cấu trúc bài giảng chuẩn 4 phần**:
-   - `### 1. 🎯 Khái niệm cốt lõi`: Định nghĩa súc tích, dễ hiểu nhất.
-   - `### 2. 🔬 Bản chất & Nguyên lý hoạt động`: Phân tích sâu tại sao và cơ chế vận hành bên trong — giúp người học hiểu gốc rễ vấn đề.
-   - `### 3. 📝 Ví dụ minh hoạ thực tế`: 1 ví dụ cụ thể kèm các bước suy luận / tính toán từng bước rõ ràng.
+3. **Cấu trúc bài giảng**:
+   - `### 1. 🎯 Khái niệm cốt lõi`: Định nghĩa súc tích, dễ hiểu nhất, đúng như context nêu.
+   - `### 2. 🔬 Bản chất & Nguyên lý hoạt động`: Trình bày lý do và cơ chế mà CONTEXT nêu ra, diễn giải cho dễ hiểu nhưng KHÔNG thêm lý do, cơ chế hay hệ quả từ kiến thức riêng.
+   - `### 3. 📝 Ví dụ minh hoạ thực tế`: CHỈ dùng ví dụ, số liệu hoặc tình huống có trong CONTEXT, trình bày lại từng bước kèm số trích dẫn. KHÔNG tự dựng ví dụ, tên riêng hay con số mới. Nếu context không có ví dụ thì BỎ HẲN mục này (không viết tiêu đề rỗng).
    - `### 4. 🤔 Câu hỏi suy ngẫm (Socratic Question)`: Kết thúc bằng ĐÚNG 1 câu hỏi gợi mở để sinh viên tự chiêm nghiệm, không tự trả lời ngay.
-4. **Trích dẫn**: Khi dùng thông tin từ context nào, chèn số tương ứng như [1]. Nếu tài liệu thiếu ý nào, phải nói rõ phần đó chưa được đề cập thay vì tự suy diễn.
+4. **Trích dẫn**: Mỗi ý lấy từ context nào, chèn số tương ứng ngay sau câu, như [1]. Chỉ gắn số khi đoạn đó thật sự nêu ý này. Nếu tài liệu thiếu ý nào, phải nói rõ phần đó chưa được đề cập thay vì tự suy diễn.
 5. **Ngôn ngữ**: Giảng bằng CÙNG ngôn ngữ với câu hỏi của người dùng (kể cả các tiêu đề mục), kể cả khi context viết bằng ngôn ngữ khác.""" + UNTRUSTED_CONTEXT_RULE
 
-_CITATION_PATTERN = re.compile(r"\[(\d+)\]")
+_CITATION_PATTERN = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")  # [1] hoặc dạng gộp [1, 2]
 
 # Nhận diện câu hỏi tiếng Anh để ép ngôn ngữ trả lời: system prompt viết tiếng Việt nên
 # chỉ quy tắc trong system prompt là KHÔNG đủ (eval check-v4: chỉ 1/4 câu tiếng Anh được
@@ -136,7 +136,7 @@ def _last_answer_feedback(state: GraphState) -> str | None:
 
 
 def _extract_cited_indices(answer_text: str) -> set[int]:
-    return {int(m) for m in _CITATION_PATTERN.findall(answer_text)}
+    return {int(n) for group in _CITATION_PATTERN.findall(answer_text) for n in group.split(",")}
 
 
 def _citation(i: int, c: dict) -> dict:

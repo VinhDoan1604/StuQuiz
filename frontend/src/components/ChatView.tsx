@@ -50,8 +50,12 @@ interface Message {
   feedback?: number | null;
 }
 
-// [n] -> link nội bộ #cite-n (bỏ qua [n](...) đã là link markdown)
-const linkifyCitations = (text: string) => text.replace(/\[(\d{1,2})\](?!\()/g, '[[$1]](#cite-$1)');
+// [n] -> link nội bộ #cite-n (bỏ qua [n](...) đã là link markdown); model đôi khi viết gộp [1, 2]
+const linkifyCitations = (text: string) =>
+  text
+    .replace(/\[(\d{1,2}(?:\s*,\s*\d{1,2})+)\](?!\()/g, (_, group: string) =>
+      group.split(',').map((n) => `[${n.trim()}]`).join(''))
+    .replace(/\[(\d{1,2})\](?!\()/g, '[[$1]](#cite-$1)');
 
 const MODEL_STORAGE_KEY = 'studyrag.chatModel';
 

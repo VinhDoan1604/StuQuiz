@@ -45,7 +45,13 @@ from app.agents.state import GraphState
 from app.config import settings
 from app.llm.utils import LLMCallError, acall_llm_text
 from app.retrieval.expansion import aexpand_with_parents
-from app.retrieval.helpers import aget_all_chunks_for_documents, arerank, normalize_chunk, retrieve_top_k
+from app.retrieval.helpers import (
+    aget_all_chunks_for_documents,
+    aprepare_query,
+    arerank,
+    normalize_chunk,
+    retrieve_top_k,
+)
 from app.retrieval.query_processing import decompose_query, rewrite_query
 
 logger = logging.getLogger(__name__)
@@ -205,7 +211,9 @@ async def run_retrieval(state: GraphState) -> GraphState:
     if settings.rerank_enabled and multi_query and pool and rerank_query:
         pool = pool[: max(settings.rerank_pool_max, final_top_k)]
         try:
-            pool = await arerank(rerank_query, pool, top_k=final_top_k)
+            # Cùng dạng chuẩn hoá với nhánh một truy vấn (retrieve_top_k), để câu viết tắt/không dấu
+            # không bị reranker chấm thấp hơn chỉ vì đi qua nhánh nhiều truy vấn.
+            pool = await arerank(await aprepare_query(rerank_query), pool, top_k=final_top_k)
         except Exception as exc:
             logger.warning("run_retrieval: rerank cuối thất bại (%s) — cắt top_k không rerank.", exc)
             pool = pool[:final_top_k]
