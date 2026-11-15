@@ -3,9 +3,9 @@
 > 🇬🇧 English version: [README.md](README.md)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Architecture-Multi--Agent_CRAG_%2B_Self--RAG-6366f1?style=for-the-badge" alt="Multi-Agent CRAG" />
-  <img src="https://img.shields.io/badge/LangGraph-Cyclic_StateGraph-blue?style=for-the-badge" alt="LangGraph" />
-  <img src="https://img.shields.io/badge/Embeddings-BGE--M3_Dense_%2B_Sparse-emerald?style=for-the-badge" alt="BGE-M3" />
+  <img src="https://img.shields.io/badge/Pipeline-Dense_%2B_Rerank-6366f1?style=for-the-badge" alt="Dense + Rerank" />
+  <img src="https://img.shields.io/badge/LangGraph-StateGraph-blue?style=for-the-badge" alt="LangGraph" />
+  <img src="https://img.shields.io/badge/Embeddings-BGE--M3-emerald?style=for-the-badge" alt="BGE-M3" />
   <img src="https://img.shields.io/badge/Backend-FastAPI_%7C_Python_3.11-009688?style=for-the-badge" alt="FastAPI" />
   <img src="https://img.shields.io/badge/Frontend-React_19_%7C_Vite_%7C_TypeScript-61dafb?style=for-the-badge" alt="React Vite" />
   <img src="https://img.shields.io/badge/Vector_DB-Qdrant-red?style=for-the-badge" alt="Qdrant" />
@@ -15,12 +15,16 @@
 
 ## 1. Tổng quan
 
-**StudyRAG** là trợ lý học tập trên tài liệu của chính người học, dựa trên kiến trúc **Multi-Agent RAG (Corrective RAG + Self-RAG)**:
+**StudyRAG** là trợ lý học tập trên tài liệu của chính người học:
 
-1. **Giảm ảo giác**: chấm độ đầy đủ của ngữ cảnh trước khi sinh (CRAG) và kiểm tra tính trung thực của câu trả lời sau khi sinh (Self-RAG), có giới hạn số vòng lặp.
-2. **Ghi nhớ dài hạn**: quiz được chấm ở server, cập nhật điểm thành thạo theo chủ đề và lịch ôn tập ngắt quãng (spaced repetition).
+1. **Trả lời có căn cứ**: câu trả lời chỉ dựa trên đoạn tài liệu truy xuất được, có trích dẫn bấm được tới đoạn gốc, và từ chối khi tài liệu không có thông tin.
+2. **Ghi nhớ dài hạn**: quiz được chấm ở server, cập nhật điểm thành thạo theo chủ đề và lịch ôn tập Leitner (1 → 3 → 7 → 14 ngày).
 
-Giao diện React hiển thị **tiến trình suy luận theo thời gian thực (SSE)** và **trích dẫn bấm được** tới đoạn văn gốc.
+Tôi đã xây đủ pipeline agentic (CRAG, critic tự kiểm tra, hybrid search), rồi đo từng thành phần. Trên 81 câu hỏi, CRAG và critic tốn gấp 2 đến 3 lần token mà không cải thiện chất lượng đo được, nên bản chạy thật dùng pipeline đơn giản hơn: tìm kiếm dense, rerank bằng cross-encoder, sinh một lần. CRAG và critic vẫn còn trong code, bật bằng cờ cấu hình.
+
+![Demo StudyRAG: tải tài liệu, đặt câu hỏi, mở trích dẫn](assets/demo.gif)
+
+Giao diện React hiển thị **tiến trình xử lý theo thời gian thực (SSE)**.
 
 ---
 
@@ -31,18 +35,18 @@ flowchart TD
     User([Người học]) -->|SSE /chat/stream| Orchestrator[Orchestrator<br/>phân loại intent: qa / teaching / quiz / summary]
 
     subgraph "LangGraph StateGraph"
-        Orchestrator --> Retrieval[Retrieval Agent<br/>BGE-M3 dense + sparse, RRF, reranker, parent expansion]
-        Retrieval -->|qa / teaching| GradeContext{Chấm ngữ cảnh}
+        Orchestrator --> Retrieval[Retrieval Agent<br/>BGE-M3 dense, reranker, parent expansion]
+        Retrieval -->|qa / teaching| Generation[Generation Agent<br/>trả lời kèm trích dẫn]
         Retrieval -->|quiz / summary| QuizSummary[Quiz & Summary Agent]
+        Generation --> Accept[Chốt câu trả lời + trace]
 
-        GradeContext -->|chưa đủ & còn lượt| RewriteQuery[Viết lại truy vấn]
-        RewriteQuery --> Retrieval
-        GradeContext -->|đủ / hết lượt| Generation[Generation Agent<br/>trả lời kèm trích dẫn]
-
-        Generation --> GradeAnswer{Critic: faithfulness}
-        GradeAnswer -->|chưa đạt & còn lượt| RetryGen[Sinh lại theo feedback]
-        RetryGen --> Generation
-        GradeAnswer -->|đạt / hết lượt| Accept[Chốt câu trả lời + reflection trace]
+        Retrieval -. ENABLE_CRAG .-> GradeContext{Chấm ngữ cảnh}
+        GradeContext -. chưa đủ .-> RewriteQuery[Viết lại truy vấn]
+        RewriteQuery -.-> Retrieval
+        GradeContext -. đủ .-> Generation
+        Generation -. ENABLE_ANSWER_CRITIC .-> GradeAnswer{Critic: faithfulness}
+        GradeAnswer -. chưa đạt .-> Generation
+        GradeAnswer -. đạt .-> Accept
     end
 
     Accept --> Memory[(Lịch sử chat + rolling summary<br/>Mastery / spaced repetition)]
@@ -54,7 +58,7 @@ flowchart TD
 | API | FastAPI, SSE, JWT (HS256), argon2id, rate limit theo IP (Redis) |
 | Điều phối agent | LangGraph `StateGraph` (`app/graph/build_graph.py`) |
 | LLM | Định tuyến cheap/strong theo task (`app/llm/router.py`): Google Gemini (mặc định), OpenAI, Anthropic |
-| Embedding / rerank | BGE-M3 (dense 1024 chiều + sparse), `bge-reranker-v2-m3` |
+| Embedding / rerank | BGE-M3 (dense 1024 chiều, sparse tuỳ chọn qua `RETRIEVAL_MODE=hybrid`), `bge-reranker-v2-m3` |
 | Lưu trữ | PostgreSQL 16 (Alembic migrations), Qdrant (vector, lọc theo `doc_id`) |
 | Ingestion | PDF (PyMuPDF, fallback pypdf, OCR Tesseract tiếng Việt), DOCX, PPTX, TXT, MD |
 | Frontend | React 19 + Vite + TypeScript, nginx khi deploy |
@@ -155,7 +159,16 @@ cd frontend && npm run lint && npm run build
 CI (`.github/workflows/ci.yml`) chạy lint, kiểm tra migration upgrade/downgrade, pytest và build frontend.
 
 ### Đánh giá chất lượng RAG
-Bộ eval ablation (`dense` → `hybrid` → `hybrid_rerank` → `crag` → `full`) với LLM-as-judge và khoảng tin cậy bootstrap: xem [`eval/README.md`](eval/README.md). Kết quả chỉ được công bố từ `report.md` của một lần chạy thật.
+Bộ eval ablation với LLM-as-judge khác hãng và khoảng tin cậy bootstrap: xem [`eval/README.md`](eval/README.md). Kết quả mới nhất trên 81 câu, 18 tài liệu công khai ([`final-v1`](eval/results/final-v1/report.md)):
+
+| Cấu hình | Faithfulness | Correctness | Từ chối đúng | LLM calls | Token |
+|---|---|---|---|---|---|
+| `dense` | 0.949 | 0.957 | 22/23 | 1.0 | 2.516 |
+| **`production`** | **0.968** | **0.957** | **22/22** | 1.0 | 3.019 |
+| `crag` | 0.952 | 0.940 | 22/23 | 2.7 | 6.087 |
+| `full` | 0.963 | 0.957 | 22/23 | 3.7 | 8.923 |
+
+Ở `production`, 1 trong 23 yêu cầu không nhận được phản hồi từ nhà cung cấp LLM nên không có điểm. Các khác biệt về chất lượng đều nằm trong khoảng tin cậy 95%. Khác biệt có ý nghĩa là thứ hạng truy xuất (MRR 0.735 → 0.846) và chi phí. Câu hỏi do AI soạn và tác giả duyệt, chưa phải câu hỏi thật của sinh viên. Chi tiết và hạn chế: [README.md](README.md#evaluation).
 
 ---
 
@@ -176,4 +189,4 @@ Bộ eval ablation (`dense` → `hybrid` → `hybrid_rerank` → `crag` → `ful
 
 ## 8. Giấy phép
 
-Dự án **chưa có giấy phép mã nguồn mở**: theo mặc định mọi quyền thuộc về tác giả, người khác không được sao chép, sửa đổi hay phân phối khi chưa được cho phép.
+[AGPL-3.0](LICENSE), theo giấy phép của thư viện PyMuPDF.

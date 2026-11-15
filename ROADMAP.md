@@ -24,12 +24,15 @@ Status of StudyRAG as of **November 2026**. Items move to "Done" only when they 
 - [x] React 19 UI: spaces, upload progress, SSE reasoning timeline, clickable citations, quiz, mastery
 - [x] Auth: JWT, argon2id, email OTP, Google Sign-In; ownership checks on every id; rate limiting (Redis)
 - [x] PostgreSQL + Alembic, Docker Compose (postgres · qdrant · redis · api · web), nginx
-- [x] CI: ruff, migration round-trip, pytest (145 tests), frontend lint + build
+- [x] CI: ruff, migration round-trip, pytest (150 tests), frontend lint + build
 - [x] Ablation eval harness with bootstrap CIs, cross-model judge, human audit of the judge
 - [x] **Published evaluation results** — 18-document public corpus ([`eval/CORPUS.md`](eval/CORPUS.md)),
   48 reviewed questions (37 answerable, 11 unanswerable, 11 in English); all 6 configs run;
   [`eval/results/full-v1/report.md`](eval/results/full-v1/report.md) + free re-score
   [`retrieval-v2`](eval/results/retrieval-v2/report.md); judge–human agreement 85 % (17/20, judge more lenient).
+
+- [x] **Final evaluation of the shipped pipeline** — 81 questions, `dense` / `production` / `crag` / `full`
+  ([`eval/results/final-v1/report.md`](eval/results/final-v1/report.md)); demo GIF and screenshots in [`assets/`](assets/).
 
 **Production readiness (November 2026)**
 - [x] Conversation history reaches the generator; follow-ups rewritten in the intent call
@@ -39,7 +42,7 @@ Status of StudyRAG as of **November 2026**. Items move to "Done" only when they 
 ## 🚧 Next (in priority order)
 
 1. **Public demo** — production files and a read-only demo space are ready; hosting is next.
-2. **Demo assets** — GIF of the full flow + screenshots.
+2. **Real student questions** — replace AI-drafted eval questions with real queries.
 3. **Reranker fine-tuning** — small base model, trained on real student queries, held-out documents.
 4. **Adaptive CRAG** — run the loop only when the retrieval score is low.
 5. **Background indexing queue** — move ingestion off the API process (e.g. arq/RQ on Redis).

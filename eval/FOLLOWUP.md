@@ -126,11 +126,12 @@ patterns, not that the system is immune.
 
 ## 5. Open items
 
-- The answer-quality control run after the latest prompt changes (`prompt-check-v1`) has not
-  completed, so the injection mitigations have no before/after faithfulness number yet:
-  `python -m eval.run --dataset eval/data/questions_v2.jsonl --configs dense_rerank --tags student-phrasing hard-unanswerable --run-id prompt-check-v1`
-- No LLM run covers all 81 questions, so answer metrics here are not directly comparable with `full-v1`.
+- `final-v1` now covers all 81 questions on the shipped pipeline, replacing the abandoned
+  `prompt-check-v1`. See [`final-v1`](results/final-v1/report.md) and the paired comparisons beside it.
+- Teaching mode scored faithfulness 0.736 [0.670, 0.802] on 40 questions (`teaching-v1`): 102 of 444
+  claims were unsupported, most often in the example section, where the model invented scenarios and
+  still cited them. The prompt now restricts examples to the context. The re-measurement
+  (`teaching-v2`) stopped at 5 of 40 questions, so the fix has no measured result yet.
 - Restoring diacritics by frequency can pick the wrong word ("đề thi" → "đề thị").
-- The teaching prompt's example section has the same grounding risk as the old "Notes" section.
 - No false-premise questions. No real student questions.
 - The critic's 0.9 threshold and a cross-vendor critic are unmeasured.

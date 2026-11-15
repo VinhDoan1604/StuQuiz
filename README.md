@@ -7,7 +7,7 @@
 [![CI](https://github.com/VinhDoan1604/StuQuiz/actions/workflows/ci.yml/badge.svg)](https://github.com/VinhDoan1604/StuQuiz/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB)
 ![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-1C3C3C)
-![Qdrant](https://img.shields.io/badge/Qdrant-hybrid_search-DC244C)
+![Qdrant](https://img.shields.io/badge/Qdrant-vector_search-DC244C)
 ![FastAPI](https://img.shields.io/badge/FastAPI-SSE-009688)
 ![React](https://img.shields.io/badge/React_19-TypeScript-61DAFB)
 
@@ -18,10 +18,14 @@
 ## The short version
 
 I built the full agentic pipeline (corrective RAG, self-critic, hybrid search), then measured every
-component with an ablation harness. **Only the reranker earned its cost.** CRAG and the critic used
-3–4× the tokens with no measurable quality gain, and sparse retrieval added nothing once reranking
-was on, so production runs the simpler pipeline: dense search, cross-encoder rerank, one generation.
-The expensive paths are still in the code behind flags, and the numbers are below.
+component with an ablation harness. On 81 questions, **CRAG and the critic cost 2–3× the tokens with
+no measurable quality gain**, and sparse retrieval added nothing once reranking was on, so production
+runs the simpler pipeline: dense search, cross-encoder rerank, one generation. The reranking stack
+clearly improved ranking (MRR 0.74 → 0.85), but answer correctness did not change, because the
+evidence was usually already in the top 5. The expensive paths are still in the code behind flags,
+and the numbers are below.
+
+![StudyRAG demo: upload a document, ask a question, open a citation](assets/demo.gif)
 
 ---
 
@@ -35,7 +39,7 @@ bot has three problems on this kind of material:
 3. **It doesn't help you remember** — every session starts from zero.
 
 StudyRAG addresses each one explicitly: answers are constrained to retrieved context and refuse when
-it is missing (12/12 correct refusals on near-miss questions); every answer carries **clickable
+it is missing (22 of 22 unanswerable questions refused); every answer carries **clickable
 citations** to the source chunk; and a **server-graded quiz + spaced-review tracker** keeps a
 per-topic mastery score.
 
@@ -93,8 +97,8 @@ flowchart TD
 
 ## Design decisions & trade-offs
 
-- **Why is the reflection loop off by default?** I expected it to be the headline feature. On 33
-  hard questions it produced identical correctness at 3–4× the tokens, so it became opt-in. When
+- **Why is the reflection loop off by default?** I expected it to be the headline feature. On 81
+  questions it produced no measurable quality gain at 2–3× the tokens, so it became opt-in. When
   enabled, the trace records whether a grade was computed (`*_verified`) or the answer was accepted
   because the budget ran out (`*_forced`), so the UI never claims a check that didn't happen.
 - **Why self-host embeddings and the reranker while calling an LLM API?** Generation is where a hosted
@@ -120,6 +124,8 @@ An ablation harness ([`eval/`](eval/README.md)) adds one component at a time so 
 | `parent` | + child → parent expansion (context up to 1,500 tokens) |
 | `crag` | + context grading & query rewriting |
 | `full` | + faithfulness critic & regeneration |
+| `production` | What ships: dense top-10 → rerank → parent expansion, query decomposition, one generation |
+| `teaching` | `production` with the teaching prompt |
 
 Metrics: retrieval **hit@k / recall@k / MRR**; answer **correctness & faithfulness** (LLM-as-judge
 using a *different* model from the generator); **correct refusal rate** on unanswerable questions;
@@ -127,7 +133,46 @@ latency and LLM calls per question. All numbers come with **95 % bootstrap CIs**
 differences, and judge reliability is audited against human labels (`eval/audit.py`: 85 % agreement,
 17/20 — see Limitations).
 
-### Results
+### Final results (`final-v1`, 81 questions)
+
+These measure the code that ships. Same 18-document corpus, 81 reviewed questions (58 answerable,
+23 unanswerable, including 12 near-miss questions and 23 written in informal student phrasing).
+Generator `gemini-2.5-flash`, judge `gpt-5.4`, brackets are 95 % bootstrap CIs. Reports:
+[`report`](eval/results/final-v1/report.md), [`production vs CRAG/full`](eval/results/final-v1/compare.md),
+[`dense vs production`](eval/results/final-v1/compare_dense.md).
+
+| Config | Faithfulness | Correctness | False refusal ↓ | Correct refusal | p50 latency | LLM calls | Tokens |
+|---|---|---|---|---|---|---|---|
+| `dense` | 0.949 [0.924–0.972] | 0.957 [0.905–0.991] | 0.034 | 22/23 | 4.6 s | 1.0 | 2,516 |
+| **`production`** | **0.968** [0.945–0.988] | **0.957** [0.905–0.991] | 0.034 | **22/22**¹ | 10.3 s | 1.0 | 3,019 |
+| `crag` | 0.952 [0.925–0.973] | 0.940 [0.888–0.983] | 0.034 | 22/23 | 14.1 s | 2.7 | 6,087 |
+| `full` | 0.963 [0.941–0.982] | 0.957 [0.905–0.991] | 0.017 | 22/23 | 17.8 s | 3.7 | 8,923 |
+
+¹ One of the 23 requests got no response from the LLM provider (timeout, 0 tokens), so it has no score.
+
+| Retrieval (n = 58) | hit@1 | hit@5 | MRR |
+|---|---|---|---|
+| `dense` | 0.586 [0.466–0.724] | 0.966 [0.914–1.000] | 0.735 [0.651–0.822] |
+| `production` | 0.741 [0.621–0.845] | 0.983 [0.948–1.000] | 0.846 [0.776–0.909] |
+
+Paired differences:
+
+- **CRAG and the critic did not pay for themselves.** Against `production`, no quality metric improved
+  (every CI includes 0), and retrieval was identical. `crag` added 3,069 tokens [2,662–3,531] per
+  question and `full` added 5,851 [5,432–6,310]. On near-miss questions the loop averaged 4–5 LLM calls
+  per question to reach a refusal that `production` reached in one.
+- **The retrieval stack improved ranking but not answers.** `production` vs. `dense`: MRR +0.111
+  [+0.035, +0.189], correctness +0.000 [−0.026, +0.026], at +5.8 s per question. With hit@5 already
+  at 0.966, the evidence usually reached the generator either way. Ranking still decides which passage
+  is cited first, and a larger corpus would likely depend on it more, but this set does not show that.
+- **The ranking gain is concentrated in clean questions.** MRR +0.168 [+0.081, +0.262] on the original
+  48, but +0.010 [−0.120, +0.143] on informal student phrasing.
+- These `dense` and `production` runs differ by the whole retrieval stack (rerank, normalization,
+  decomposition). The reranker's isolated effect is the `dense` vs. `hybrid_rerank` row below.
+- `llm_calls` excludes the orchestrator, which every real chat request also runs. Measured through the
+  full Docker stack, a question takes 16–22 s end to end on CPU, most of it retrieval.
+
+### Earlier ablation (`full-v1`, 48 questions)
 
 **Setup:** 18 public documents ([`eval/CORPUS.md`](eval/CORPUS.md): Vietnamese Wikipedia, OpenStax, a
 Vietnamese decree, VOER, course notes/slides), **48 reviewed questions** (37 answerable, 11 unanswerable;
@@ -168,8 +213,9 @@ retrieval); `full` was within 0.03 on every metric in `full-v1`.
   documents don't say" — then listed all three meanings from that same chunk; with `hybrid` the
   evidence was not retrieved at all and the model (honestly) refused. Once the reranker moved the
   evidence to position 1, every config answered correctly.
+  That gain is in ranking. Answer correctness was 0.96 for `dense` and 0.95 for `hybrid_rerank`.
 - **Hybrid (sparse + RRF) did not help** on this corpus: hit@5 −0.08 [−0.19, 0.00], MRR −0.02
-  [−0.08, +0.05] vs. `dense`. It is kept only as the candidate generator for the reranker.
+  [−0.08, +0.05] vs. `dense`. Production now uses dense candidates for the reranker.
 - **CRAG / the full loop** raise correctness (0.96 → 0.99) and remove false refusals (3 % → 0 %), but
   neither difference is significant at n = 37 — while costing ~4× the LLM calls and ~10× the latency of
   `dense`.
@@ -253,7 +299,7 @@ cd frontend && npm install && npm run dev              # http://localhost:5173
 ## Tests & quality
 
 ```bash
-pytest -q                                  # 145 tests: API, auth isolation, graph routing, memory, quiz, quotas, streaming — no LLM/Qdrant needed
+pytest -q                                  # 150 tests: API, auth isolation, graph routing, memory, quiz, quotas, streaming — no LLM/Qdrant needed
 ruff check app tests migrations scripts
 cd frontend && npm run lint && npm run build
 ```
@@ -280,8 +326,11 @@ migrations/      Alembic          tests/  pytest
 
 ## Limitations & next steps
 
-- **Small eval set → wide CIs.** Only 37 answerable questions; most differences between configs fall
-  inside the 95 % CI, so only the reranker's gain is claimed as real.
+- **Teaching mode is less grounded than Q&A.** It scored faithfulness 0.736 [0.670–0.802] on 40
+  questions, against 0.968 for Q&A, mainly because the model invented examples and cited them. The
+  prompt now restricts examples to the retrieved context, but that fix has not been re-measured yet.
+- **Small eval set → wide CIs.** Only 58 answerable questions; quality differences between configs fall
+  inside the 95 % CI, so only the ranking gain and the cost differences are claimed as real.
 - **The judge agrees with a human on 85 % of answers (17/20)** (`eval/audit.py`, random sample from
   `full-v1`, exact correct/partial/incorrect label). All 3 disagreements were the judge being **more
   lenient** (correct vs. partial ×2 on the same question, partial vs. incorrect ×1); it was never
@@ -297,15 +346,13 @@ migrations/      Alembic          tests/  pytest
   documents" and then answers anyway (q025 with `dense`) is not counted as a refusal. A cheap fix —
   flag answers that both claim missing information and cite sources, then regenerate — is planned
   but not yet measured.
-- **Correct-refusal rate is at the ceiling** (11/11 everywhere): the unanswerable questions need
-  harder near-miss cases to separate configs.
+- **Correct-refusal rate is near the ceiling** (22 of 23 or better everywhere), even after adding 12
+  near-miss questions, so it barely separates configs.
 - **`hybrid` is not fully deterministic:** Qdrant's RRF produces score ties at the top-5 cut-off and
   breaks them arbitrarily, so `hybrid` numbers move slightly between runs (`hybrid_rerank` is stable
   because it reranks the top 20).
-- Auto-generated eval questions share vocabulary with the source, which makes retrieval look easier
-  than real student questions; the dataset is being extended with hand-written paraphrases.
-- Answer quality has not been re-measured since the prompt-injection changes (see `eval/FOLLOWUP.md`, section 5).
-- All v2 questions were drafted by an AI and reviewed by the author; none are real student queries yet.
+- Eval questions were drafted by an AI and reviewed by the author, and tend to share vocabulary with
+  the source, which makes retrieval look easier than it would be with real student queries.
 - Indexing runs in a single in-process slot; a task queue would be needed for many concurrent uploads.
 - One worker per container because models live in process memory; scale out horizontally.
 
