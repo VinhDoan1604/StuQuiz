@@ -11,7 +11,10 @@ thành phần so với cấu hình liền trước:
                 sparse còn đóng góp gì khi đã có reranker (RETRIEVAL_MODE=dense hay hybrid).
   parent        hybrid_rerank + mở rộng parent.
   N = RERANK_CANDIDATES trong settings (mặc định 20) — đặt biến môi trường để thử top-10.
-  crag          + Retrieval Agent (decompose) + grade_context + viết lại truy vấn (CRAG).
+  production    Đúng đường chạy thật khi tắt CRAG/critic: run_retrieval (RETRIEVAL_MODE, rerank,
+                decompose, mở rộng parent) -> sinh 1 lần. Mốc so sánh đúng cho crag/full.
+  teaching      Như production nhưng intent="teaching" (prompt giảng bài, chỉ để đo grounding).
+  crag          production + grade_context + viết lại truy vấn (CRAG).
   full          + Critic chấm faithfulness + sinh lại (Self-RAG)  = đồ thị đầy đủ.
 
 Quy ước công bằng:
@@ -44,7 +47,7 @@ def rerank_candidates() -> int:
 
 
 RETRIEVAL_CONFIGS = ("dense", "hybrid", "hybrid_rerank", "dense_rerank", "parent")
-GRAPH_CONFIGS = ("crag", "full")
+GRAPH_CONFIGS = ("production", "teaching", "crag", "full")
 ALL_CONFIGS = RETRIEVAL_CONFIGS + GRAPH_CONFIGS
 
 
@@ -116,7 +119,7 @@ async def retrieve(config: str, question: str, document_ids: list[str]) -> tuple
 # ---------------------------------------------------------------------------
 # Graph configs (tái dùng node của build_graph.py)
 # ---------------------------------------------------------------------------
-def build_variant_graph(use_critic: bool):
+def build_variant_graph(use_critic: bool, use_crag: bool = True):
     from langgraph.graph import END, START, StateGraph
 
     import app.graph.build_graph as bg
@@ -124,19 +127,22 @@ def build_variant_graph(use_critic: bool):
 
     wf = StateGraph(GraphState)
     wf.add_node("retrieval", bg.retrieval_node)
-    wf.add_node("grade_context", bg.grade_context_node)
-    wf.add_node("rewrite_query", bg.rewrite_query_node)
     wf.add_node("generation", bg.generation_node)
     wf.add_node("accept_answer", bg.accept_answer_node)
 
     wf.add_edge(START, "retrieval")
-    wf.add_edge("retrieval", "grade_context")
-    wf.add_conditional_edges(
-        "grade_context",
-        bg.route_after_grade_context,
-        {"rewrite_query": "rewrite_query", "generation": "generation"},
-    )
-    wf.add_edge("rewrite_query", "retrieval")
+    if use_crag:
+        wf.add_node("grade_context", bg.grade_context_node)
+        wf.add_node("rewrite_query", bg.rewrite_query_node)
+        wf.add_edge("retrieval", "grade_context")
+        wf.add_conditional_edges(
+            "grade_context",
+            bg.route_after_grade_context,
+            {"rewrite_query": "rewrite_query", "generation": "generation"},
+        )
+        wf.add_edge("rewrite_query", "retrieval")
+    else:
+        wf.add_edge("retrieval", "generation")
 
     if use_critic:
         wf.add_node("grade_answer", bg.grade_answer_node)
@@ -180,6 +186,9 @@ def build_graphs(configs: list[str]) -> dict[str, Any]:
     if any(c in GRAPH_CONFIGS for c in configs):
         _install_expansion_probe()
     graphs: dict[str, Any] = {}
+    for name in ("production", "teaching"):
+        if name in configs:
+            graphs[name] = build_variant_graph(use_critic=False, use_crag=False)
     if "crag" in configs:
         graphs["crag"] = build_variant_graph(use_critic=False)
     if "full" in configs:
@@ -232,7 +241,7 @@ async def run_pipeline(
             state = {
                 "session_id": "eval",
                 "user_query": question,
-                "intent": "qa",
+                "intent": "teaching" if config == "teaching" else "qa",
                 "document_ids": document_ids,
                 "chat_history_summary": "",
                 "mastery_context": {},

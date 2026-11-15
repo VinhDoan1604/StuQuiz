@@ -109,6 +109,12 @@ def test_notes_section_restricted_to_context():
     assert "CONTEXT" in line and "BỎ HẲN" in line
 
 
+def test_teaching_example_restricted_to_context():
+    # teaching-v1: 41% khẳng định trong mục Ví dụ không có căn cứ, gồm ví dụ tự dựng vẫn gắn [1].
+    line = next(x for x in gen._TEACHING_SYSTEM_PROMPT.splitlines() if "📝" in x)
+    assert "CONTEXT" in line and "BỎ HẲN" in line
+
+
 # --- Retrieval mode / rerank -----------------------------------------------------------
 def test_retrieval_mode_validation():
     assert Settings(_env_file=None, retrieval_mode=" Dense ").retrieval_mode == "dense"
@@ -143,3 +149,45 @@ def test_retrieve_without_rerank_only_fetches_top_k(monkeypatch):
     assert hybrid.await_count == 1 and rr.await_count == 0
     assert hybrid.await_args.kwargs["top_k"] == 5
     assert [c["text"] for c in out] == ["c0", "c1", "c2", "c3", "c4"]
+
+
+def test_grouped_citations_are_all_extracted():
+    chunks = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
+    cited = gen._build_qa_citations(chunks, "Ý một [1, 2]. Ý hai [3]. Số ngoài phạm vi [9, 10].")
+    assert [c["index"] for c in cited] == [1, 2, 3]
+
+
+# --- Cấu hình production của eval + audit faithfulness ------------------------------
+def test_production_eval_graph_has_no_reflection_nodes():
+    from eval.pipelines import build_variant_graph
+
+    nodes = set(build_variant_graph(use_critic=False, use_crag=False).get_graph().nodes)
+    assert {"retrieval", "generation", "accept_answer"} <= nodes
+    assert not {"grade_context", "rewrite_query", "grade_answer"} & nodes
+
+
+def test_multi_query_rerank_uses_normalized_question(monkeypatch):
+    from app.agents import retrieval_agent as agent
+
+    hits = [{"text": "a"}, {"text": "b"}]
+    rerank = AsyncMock(return_value=hits)
+    monkeypatch.setattr(settings, "enable_parent_expansion", False)
+    monkeypatch.setattr(settings, "rerank_enabled", True)
+    monkeypatch.setattr(agent, "decompose_query", AsyncMock(return_value=["q1", "q2"]))
+    monkeypatch.setattr(agent, "retrieve_top_k", AsyncMock(return_value=hits))
+    monkeypatch.setattr(agent, "aprepare_query", AsyncMock(return_value="chuan hoa"))
+    monkeypatch.setattr(agent, "arerank", rerank)
+    asyncio.run(agent.run_retrieval({"user_query": "so sanh a va b", "intent": "qa", "document_ids": ["d"]}))
+    assert rerank.await_args.args[0] == "chuan hoa"
+
+
+def test_faithfulness_audit_reports_direction_of_disagreement():
+    from eval.audit import score_faithfulness
+
+    rows = [
+        {"judge_supported": "true", "human_supported": "true"},
+        {"judge_supported": "true", "human_supported": "false"},
+        {"judge_supported": "false", "human_supported": "true"},
+        {"judge_supported": "false", "human_supported": ""},
+    ]
+    assert score_faithfulness(rows) == {"n": 3, "agree": 1, "judge_lenient": 1, "judge_strict": 1}

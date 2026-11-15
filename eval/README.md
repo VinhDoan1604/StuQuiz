@@ -13,6 +13,10 @@ Bộ eval này thay thế hoàn toàn `ragas_eval.py` cũ (baseline tính ngư�
 | `parent` | `hybrid_rerank` + mở rộng parent | |
 | `crag` | + Retrieval Agent, chấm context, viết lại truy vấn | tái dùng node trong `build_graph.py` |
 | `full` | + Critic chấm faithfulness, sinh lại | đồ thị đầy đủ |
+| `production` | pipeline đang chạy thật | dense top-N → rerank → mở rộng parent, phân rã truy vấn, 1 lần sinh, không CRAG/critic |
+| `teaching` | `production` với prompt giảng bài | đo faithfulness riêng của chế độ teaching |
+
+So sánh ghép cặp theo nhóm câu hỏi, không gọi LLM: `python -m eval.compare eval/results/<run> --dataset eval/data/questions_v2.jsonl --base production --vs crag full --out eval/results/<run>/compare.md`.
 
 ## Quy trình
 

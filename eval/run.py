@@ -43,7 +43,7 @@ from eval.report import build_report
 
 def _git_commit() -> str:
     try:
-        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+        return subprocess.check_output(["git", "describe", "--always", "--dirty"], text=True, stderr=subprocess.DEVNULL).strip()
     except Exception:
         return "n/a"
 
