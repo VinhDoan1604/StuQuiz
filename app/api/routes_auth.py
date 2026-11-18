@@ -65,7 +65,7 @@ class VerifyOtpRequest(BaseModel):
 
 
 class ResendOtpRequest(BaseModel):
-    email: str
+    email: str = Field(max_length=254)
 
 
 class GoogleAuthRequest(BaseModel):
@@ -159,9 +159,14 @@ def _issue_otp(db: Session, user: User) -> str:
     return code
 
 
-def _deliver_otp(email: str, code: str) -> None:
+def _deliver_otp(db: Session, user: User, code: str) -> None:
     # Ở dev mã được trả về qua `dev_code` nên không cần email thật.
-    if not send_verification_email(email, code) and not settings.is_dev:
+    if not send_verification_email(user.email, code) and not settings.is_dev:
+        # Mã chưa từng tới tay người dùng: huỷ nó để không kích hoạt thời gian chờ gửi lại
+        # (nếu không, thử lại ngay sẽ bị 429 và đăng nhập báo sai "mã đã được gửi gần đây").
+        user.verification_code = None
+        user.verification_code_expires_at = None
+        db.commit()
         raise HTTPException(
             status_code=503, detail="Không gửi được email xác thực. Vui lòng thử lại sau."
         )
@@ -203,7 +208,7 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
         db.refresh(user)
 
     code = _issue_otp(db, user)
-    _deliver_otp(email, code)
+    _deliver_otp(db, user, code)
     return _otp_response(email, code, "Vui lòng nhập mã xác thực 6 số đã gửi tới email của bạn.")
 
 
@@ -247,7 +252,7 @@ def resend_otp(req: ResendOtpRequest, db: Session = Depends(get_db)):
 
     _enforce_resend_cooldown(user)
     code = _issue_otp(db, user)
-    _deliver_otp(email, code)
+    _deliver_otp(db, user, code)
     return _otp_response(email, code, generic)
 
 
@@ -265,7 +270,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         elapsed = _seconds_since_otp_sent(user)
         if elapsed is None or elapsed >= settings.otp_resend_cooldown_seconds:
             code = _issue_otp(db, user)
-            _deliver_otp(email, code)
+            _deliver_otp(db, user, code)
             return _otp_response(email, code, "Tài khoản chưa xác thực. Vui lòng nhập mã OTP.")
         return _otp_response(email, None, "Mã OTP đã được gửi gần đây, vui lòng kiểm tra email.")
 

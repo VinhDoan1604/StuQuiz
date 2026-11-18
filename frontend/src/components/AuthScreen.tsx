@@ -12,6 +12,7 @@ import {
   googleAuth,
   loginUser,
   registerUser,
+  resendOtp,
   verifyOtp,
   type UserProfile,
 } from '../services/api';
@@ -47,6 +48,50 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
   useEffect(() => {
     fetchGoogleClientId().then(setGoogleClientId, () => setGoogleClientId(undefined));
   }, []);
+
+  // Thời gian chờ trước khi được gửi lại mã (khớp OTP_RESEND_COOLDOWN_SECONDS mặc định của backend)
+  const RESEND_COOLDOWN = 60;
+  const [resendIn, setResendIn] = useState(0);
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = window.setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => window.clearTimeout(t);
+  }, [resendIn]);
+
+  const enterOtpStep = (res: { email?: string; dev_code?: string | null }, message: string) => {
+    setPendingEmail(res.email || email.trim());
+    setDevCode(res.dev_code || null);
+    setInfoMessage(message);
+    setOtpCode('');
+    setError(null);
+    setResendIn(RESEND_COOLDOWN);
+    setAuthStep('otp');
+  };
+
+  const handleResend = async () => {
+    setError(null);
+    setInfoMessage(null);
+    setLoading(true);
+    try {
+      const res = await resendOtp(pendingEmail);
+      setDevCode(res.dev_code || null);
+      setOtpCode('');
+      setInfoMessage('Đã gửi mã mới. Vui lòng kiểm tra email (cả mục thư rác).');
+      setResendIn(RESEND_COOLDOWN);
+    } catch (err) {
+      setError(errorMessage(err, 'Không thể gửi lại mã xác thực'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBackToForm = () => {
+    setAuthStep('form');
+    setOtpCode('');
+    setDevCode(null);
+    setError(null);
+    setInfoMessage(null);
+  };
 
   // Quick Demo Access
   const handleQuickDemo = async () => {
@@ -95,20 +140,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
       if (tab === 'login') {
         const res = await loginUser(email.trim(), password);
         if (res.status === 'needs_verification') {
-          setPendingEmail(res.email || email.trim());
-          setDevCode(res.dev_code || null);
-          setInfoMessage(res.message || 'Mã xác thực đã được gửi tới email của bạn.');
-          setAuthStep('otp');
+          enterOtpStep(res, res.message || 'Mã xác thực đã được gửi tới email của bạn.');
         } else if (res.user && res.token) {
           onSuccess(res.user, res.token);
         }
       } else {
         const res = await registerUser(email.trim(), password, fullName.trim());
         if (res.status === 'needs_verification') {
-          setPendingEmail(res.email || email.trim());
-          setDevCode(res.dev_code || null);
-          setInfoMessage('Đăng ký thành công! Nhập mã OTP để kích hoạt tài khoản.');
-          setAuthStep('otp');
+          enterOtpStep(res, 'Đăng ký thành công! Nhập mã OTP để kích hoạt tài khoản.');
         } else if (res.user && res.token) {
           onSuccess(res.user, res.token);
         }
@@ -429,6 +468,20 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
                 </div>
               )}
 
+              {infoMessage && (
+                <div style={{
+                  padding: '9px 12px',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'var(--success-subtle)',
+                  border: '1px solid var(--success-border)',
+                  color: '#34d399',
+                  fontSize: '12.5px',
+                  marginBottom: '14px'
+                }}>
+                  {infoMessage}
+                </div>
+              )}
+
               {error && (
                 <div style={{
                   padding: '9px 12px',
@@ -464,6 +517,31 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
                   {loading ? <Loader2 size={16} className="animate-spin" /> : 'Xác Nhận'}
                 </button>
               </form>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '14px', fontSize: '12.5px' }}>
+                <button
+                  type="button"
+                  onClick={handleBackToForm}
+                  disabled={loading}
+                  style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: 0 }}
+                >
+                  ← Quay lại
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResend}
+                  disabled={loading || resendIn > 0}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    color: resendIn > 0 ? 'var(--text-muted)' : 'var(--primary)',
+                    cursor: resendIn > 0 ? 'default' : 'pointer'
+                  }}
+                >
+                  {resendIn > 0 ? `Gửi lại mã sau ${resendIn}s` : 'Gửi lại mã'}
+                </button>
+              </div>
             </div>
           )}
         </div>
