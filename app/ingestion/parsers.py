@@ -319,6 +319,7 @@ def _parse_pdf(raw_bytes: bytes, filename: str) -> ParsedDocument:
     warnings: list[str] = []
     order = 0
     total_pages = 0
+    doc = None
 
     # Ưu tiên dùng PyMuPDF (fitz) vì viết bằng C++, trích xuất cực nhanh (< 0.1s)
     # và chính xác hơn hẳn so với pypdf thuần Python.
@@ -408,12 +409,12 @@ def _parse_pdf(raw_bytes: bytes, filename: str) -> ParsedDocument:
                 )
                 order += 1
 
-        doc.close()
-
     except ParsingError:
         raise  # vượt giới hạn: không lùi về pypdf
     except Exception as fitz_err:
         logger.warning("PyMuPDF parser gặp lỗi (%s), chuyển sang fallback pypdf...", fitz_err)
+        # PyMuPDF có thể lỗi giữa chừng: bỏ các block đã trích để pypdf không lặp lại các trang đầu.
+        blocks, order = [], 0
         try:
             reader = PdfReader(io.BytesIO(raw_bytes))
         except PdfReadError as exc:
@@ -454,6 +455,9 @@ def _parse_pdf(raw_bytes: bytes, filename: str) -> ParsedDocument:
                     )
                 )
                 order += 1
+    finally:
+        if doc is not None:
+            doc.close()  # cả khi vượt giới hạn trang / OCR (trước đây rò rỉ handle)
 
     if not blocks:
         warnings.append("Không trích xuất được nội dung nào từ toàn bộ PDF.")

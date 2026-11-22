@@ -107,3 +107,23 @@ def test_ruled_table_becomes_one_table_block_in_reading_order_without_duplicate_
     assert table.text == "Keyword | Section\ndata mart | 1.4\ngranularity | 2.6"
     assert kinds.index(BlockType.TABLE) == 2          # sau heading + đoạn "Text before", trước thân bài
     assert not any(b.type != BlockType.TABLE and "granularity" in b.text for b in blocks)
+
+
+def test_pymupdf_failure_midway_falls_back_to_pypdf_without_duplicating_pages(monkeypatch):
+    import app.ingestion.parsers as parsers
+
+    real = parsers._blocks_from_font_page
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:  # trang 1 đã ra block, trang 2 làm PyMuPDF lỗi
+            raise RuntimeError("PyMuPDF lỗi giữa chừng")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(parsers, "_blocks_from_font_page", flaky)
+    data = _pdf([[(80, "Page one title", 20, False), *_body_page()],
+                 [(80, "Page two title", 20, False), *_body_page()]])
+    texts = [b.text for b in _blocks(data)]
+    assert sum("Page one title" in t for t in texts) == 1
+    assert any("Page two title" in t for t in texts)
