@@ -20,7 +20,7 @@ jobs:
           pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements-dev.txt
       - name: Lint
-        run: ruff check app tests migrations scripts
+        run: ruff check app tests migrations scripts eval
       - name: Migrations apply cleanly
         env:
           DATABASE_URL: sqlite:///./ci.db
