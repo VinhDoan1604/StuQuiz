@@ -21,6 +21,8 @@ Chỉ số (thấp hơn = tốt hơn):
 - cer: lỗi ký tự, giữ dấu tiếng Việt, hoa/thường và dấu câu; khoảng trắng/ngắt dòng được gộp.
 - cer_nodiac: như cer nhưng bỏ dấu — chênh lệch cer - cer_nodiac ~ phần lỗi do dấu.
 - wer: lỗi từ (âm tiết).
+- word_f1 (CAO hơn = tốt hơn): F1 trên túi từ, không phụ thuộc thứ tự đọc. Thêm SAU khi chẩn đoán
+  ocr-v1: hai trang có CER cao vì VLM đọc bảng theo thứ tự khác text layer, không phải chép sai.
 CI: percentile bootstrap; hiệu VLM - Tesseract là paired bootstrap theo ảnh.
 
 Kết quả: eval/results/<run-id>/{report.md, summary.json, meta.json, raw.jsonl}.
@@ -41,12 +43,13 @@ from app.config import settings
 from app.ingestion.ocr import ocr_page_image
 from app.ingestion.vlm import VLM_TRANSCRIBE_SYSTEM_PROMPT, vlm_transcribe_page
 from app.llm.router import begin_request_usage
-from eval.metrics import bootstrap_ci, cer, paired_bootstrap_diff, wer
+from eval.metrics import bootstrap_ci, cer, paired_bootstrap_diff, wer, word_f1
 
 DATA_DIR = Path("eval/data/ocr/synthetic_scan")
 RESULTS = Path("eval/results")
 ENGINES = ("tesseract", "vlm")
-METRICS = ("cer", "cer_nodiac", "wer")
+METRICS = ("cer", "cer_nodiac", "wer", "word_f1")
+HIGHER_IS_BETTER = {"word_f1"}
 LEVEL_ORDER = ("light", "medium", "heavy")
 
 
@@ -82,6 +85,7 @@ def score(reference: str, hypothesis: str) -> dict[str, float]:
         "cer": round(cer(reference, hypothesis), 4),
         "cer_nodiac": round(cer(reference, hypothesis, strip_diacritics=True), 4),
         "wer": round(wer(reference, hypothesis), 4),
+        "word_f1": round(word_f1(reference, hypothesis), 4),
     }
 
 
@@ -109,11 +113,11 @@ def build_report(records: list[dict], meta: dict, n_boot: int = 2000) -> tuple[d
         f"# OCR vs VLM on synthetic scans (`{meta['run_id']}`)", "",
         f"{summary['n_images']} synthetic scans of Vietnamese lecture notes (levels: "
         + ", ".join(f"{lv} {sum(1 for r in by[engines[0]] if r['level'] == lv)}" for lv in LEVEL_ORDER)
-        + "). Lower is better. Brackets: 95 % bootstrap CI.",
+        + "). ↓ lower is better, ↑ higher is better. Brackets: 95 % bootstrap CI.",
         f"Tesseract lang `{meta['ocr_lang']}`; VLM engines are labelled by model (task `vision`, same prompt). "
         f"Commit `{meta['git_commit']}`.", "",
-        "| Engine | CER | CER without diacritics | WER | Errors | s / page (median) | Tokens / page (mean) |",
-        "|---|---|---|---|---|---|---|",
+        "| Engine | CER ↓ | CER without diacritics ↓ | WER ↓ | Word F1 ↑ (order-free) | Errors | s / page (median) | Tokens / page (mean) |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for e in engines:
         rows = by[e]
@@ -133,6 +137,7 @@ def build_report(records: list[dict], meta: dict, n_boot: int = 2000) -> tuple[d
         }
         lines.append(
             f"| `{e}` | {_fmt_ci(*stats['cer'])} | {_fmt_ci(*stats['cer_nodiac'])} | {_fmt_ci(*stats['wer'])} "
+            f"| {_fmt_ci(*stats['word_f1'])} "
             f"| {errors}/{len(rows)} | {summary['engines'][e]['seconds_median']:.1f} "
             f"| {summary['engines'][e]['tokens_mean']:,.0f} |"
         )
@@ -148,12 +153,14 @@ def build_report(records: list[dict], meta: dict, n_boot: int = 2000) -> tuple[d
         base = {m: {r["item"]: r[m] for r in by["tesseract"] if not r["error"]} for m in METRICS}
         for e in engines[1:]:
             summary["paired_vs_tesseract"][e] = {}
-            lines += ["", f"**Paired difference, `{e}` − `tesseract`** (negative = fewer errors than Tesseract):", ""]
+            lines += ["", f"**Paired difference, `{e}` − `tesseract`** (error rates: negative = better; "
+                      "word F1: positive = better):", ""]
             for m in METRICS:
                 a = {r["item"]: r[m] for r in by[e] if not r["error"]}
                 d, lo, hi, n = paired_bootstrap_diff(a, base[m], n_boot=n_boot)
                 summary["paired_vs_tesseract"][e][m] = {"diff": d, "lo": lo, "hi": hi, "n": n}
-                verdict = "no demonstrated difference" if lo <= 0 <= hi else ("fewer errors" if hi < 0 else "more errors")
+                better = lo > 0 if m in HIGHER_IS_BETTER else hi < 0
+                verdict = "no demonstrated difference" if lo <= 0 <= hi else (f"{e} better" if better else "tesseract better")
                 lines.append(f"- `{m}`: {d:+.3f} [{lo:+.3f}, {hi:+.3f}], n = {n} → {verdict}")
 
     lines += ["", "Caveats: synthetic degradation of digital pages, not real scans or phone photos; one page set "

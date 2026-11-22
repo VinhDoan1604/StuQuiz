@@ -8,7 +8,7 @@ META = {"run_id": "t", "ocr_lang": "vie+eng", "git_commit": "abc"}
 
 def _rec(item, level, engine, cer_value, error=None):
     return {"item": item, "level": level, "engine": engine, "cer": cer_value, "cer_nodiac": cer_value / 2,
-            "wer": cer_value * 2, "seconds": 1.0, "tokens_in": 0 if engine == "tesseract" else 1000,
+            "wer": cer_value * 2, "word_f1": 1 - cer_value, "seconds": 1.0, "tokens_in": 0 if engine == "tesseract" else 1000,
             "tokens_out": 0 if engine == "tesseract" else 200, "fallbacks": 0, "error": error}
 
 
@@ -20,7 +20,7 @@ def _records():
 
 
 def test_score_is_zero_for_identical_text_up_to_whitespace():
-    assert score("Kho dữ liệu\nlà gì", "Kho dữ liệu là gì") == {"cer": 0.0, "cer_nodiac": 0.0, "wer": 0.0}
+    assert score("Kho dữ liệu\nlà gì", "Kho dữ liệu là gì") == {"cer": 0.0, "cer_nodiac": 0.0, "wer": 0.0, "word_f1": 1.0}
 
 
 def test_report_puts_tesseract_first_and_flags_clear_paired_gain():
@@ -28,7 +28,7 @@ def test_report_puts_tesseract_first_and_flags_clear_paired_gain():
     assert list(summary["engines"]) == ["tesseract", "vlm:m"]
     d = summary["paired_vs_tesseract"]["vlm:m"]["cer"]
     assert d["n"] == 4 and d["hi"] < 0
-    assert "fewer errors" in md
+    assert "vlm:m better" in md
     assert summary["engines"]["vlm:m"]["tokens_mean"] == 1200
 
 

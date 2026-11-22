@@ -216,3 +216,19 @@ def wer(reference: str, hypothesis: str) -> float:
     if not ref:
         return 0.0 if not hyp else 1.0
     return edit_distance(ref, hyp) / len(ref)
+
+
+def word_f1(reference: str, hypothesis: str) -> float:
+    """F1 trên túi từ (multiset), KHÔNG phụ thuộc thứ tự: tách lỗi chép chữ khỏi khác biệt
+    thứ tự đọc (bảng đọc theo hàng hay cột, hai cột). Cao hơn = tốt hơn."""
+    from collections import Counter
+
+    ref = Counter(normalize_ocr_text(reference).split())
+    hyp = Counter(normalize_ocr_text(hypothesis).split())
+    if not ref and not hyp:
+        return 1.0
+    overlap = sum((ref & hyp).values())
+    if not overlap:
+        return 0.0
+    precision, recall = overlap / sum(hyp.values()), overlap / sum(ref.values())
+    return 2 * precision * recall / (precision + recall)

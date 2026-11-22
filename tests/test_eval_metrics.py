@@ -207,3 +207,11 @@ def test_normalize_ocr_text_is_nfc_and_strips_d_bar():
 
 def test_table_cell_separators_are_formatting_not_errors():
     assert cer("Tiêu chí OLTP OLAP", "Tiêu chí | OLTP | OLAP") == 0.0
+
+
+def test_word_f1_ignores_reading_order_but_not_wrong_words():
+    from eval.metrics import word_f1
+
+    assert word_f1("a b c d", "c d a b") == 1.0
+    assert word_f1("a b c d", "a b x y") == 0.5
+    assert word_f1("", "") == 1.0 and word_f1("a", "") == 0.0
