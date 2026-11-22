@@ -79,6 +79,18 @@ Chạy bị ngắt/lỗi 429 → chạy lại cùng `--run-id`, chỉ các câu 
   (số LLM calls vẫn đúng).
 - Orchestrator bị bỏ qua (intent cố định `qa`) để chỉ đo chất lượng RAG.
 
+## OCR / VLM (trang scan)
+
+```bash
+python scripts/prepare_visual_eval.py                                  # ảnh + ground truth vào eval/data/ocr/ (gitignored)
+python -m eval.ocr_eval --engines tesseract --run-id ocr-tess          # miễn phí
+python -m eval.ocr_eval --engines tesseract vlm --run-id ocr-v1        # VLM = CHEAP model, task "vision"
+python -m eval.ocr_eval --from-raw eval/results/ocr-v1 --rescore --run-id ocr-v1b   # chấm lại khi sửa nhãn
+```
+
+Chỉ số: CER, CER bỏ dấu, WER (thấp = tốt) và word F1 không phụ thuộc thứ tự đọc (cao = tốt), CI bootstrap 95 %,
+hiệu paired so với Tesseract. Không cần judge. `raw.jsonl` chứa nguyên văn ghi chú CO4031: không commit.
+
 ## Công bố kết quả
 - README chính không chứa số liệu cho tới khi có một lần chạy thật: commit riêng 1 `report.md`
   đại diện vào thư mục tài liệu rồi dẫn link từ README.

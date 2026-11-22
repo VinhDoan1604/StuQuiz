@@ -1,0 +1,83 @@
+{
+  "run_id": "ocr-v1",
+  "date": "2026-11-22 21:10",
+  "merged_from": [
+    "ocr-v1-gemini"
+  ],
+  "git_commit": "80e2100-dirty",
+  "ocr_lang": "vie+eng",
+  "dataset": "eval/data/ocr/synthetic_scan/manifest.json",
+  "degradation": {
+    "seed": 13,
+    "dpi": 150,
+    "levels": {
+      "light": [
+        0.4,
+        0.3,
+        5,
+        75,
+        0.9
+      ],
+      "medium": [
+        0.9,
+        0.6,
+        10,
+        55,
+        0.8
+      ],
+      "heavy": [
+        1.5,
+        0.8,
+        14,
+        40,
+        0.7
+      ]
+    }
+  },
+  "metrics": "NFC, whitespace collapsed, case and punctuation kept; cer_nodiac strips Vietnamese diacritics",
+  "rescored_against": "eval/data/ocr/synthetic_scan",
+  "sources": [
+    {
+      "run_id": "ocr-v1-gemini",
+      "date": "2026-11-22 20:56",
+      "git_commit": "80e2100-dirty",
+      "engines": [
+        "tesseract",
+        "vlm"
+      ],
+      "dataset": "eval/data/ocr/synthetic_scan/manifest.json",
+      "n_images": 10,
+      "degradation": {
+        "seed": 13,
+        "dpi": 150,
+        "levels": {
+          "light": [
+            0.4,
+            0.3,
+            5,
+            75,
+            0.9
+          ],
+          "medium": [
+            0.9,
+            0.6,
+            10,
+            55,
+            0.8
+          ],
+          "heavy": [
+            1.5,
+            0.8,
+            14,
+            40,
+            0.7
+          ]
+        }
+      },
+      "ocr_lang": "vie+eng",
+      "vlm_model": "shopaikey_google:gemini-2.5-flash",
+      "vlm_prompt_chars": 747,
+      "metrics": "NFC, whitespace collapsed, case and punctuation kept; cer_nodiac strips Vietnamese diacritics"
+    }
+  ]
+}

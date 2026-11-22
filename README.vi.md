@@ -60,7 +60,7 @@ flowchart TD
 | LLM | Định tuyến cheap/strong theo task (`app/llm/router.py`): Google Gemini (mặc định), OpenAI, Anthropic |
 | Embedding / rerank | BGE-M3 (dense 1024 chiều, sparse tuỳ chọn qua `RETRIEVAL_MODE=hybrid`), `bge-reranker-v2-m3` |
 | Lưu trữ | PostgreSQL 16 (Alembic migrations), Qdrant (vector, lọc theo `doc_id`) |
-| Ingestion | PDF (PyMuPDF, fallback pypdf, OCR Tesseract tiếng Việt), DOCX, PPTX, TXT, MD |
+| Ingestion | PDF (PyMuPDF, fallback pypdf, OCR Tesseract tiếng Việt; tuỳ chọn `OCR_ENGINE=vlm` đọc trang scan bằng mô hình đa phương thức), DOCX, PPTX, TXT, MD |
 | Frontend | React 19 + Vite + TypeScript, nginx khi deploy |
 
 ### Bảo mật & cô lập dữ liệu
@@ -83,7 +83,7 @@ studyRAG/
 │   ├── core/              # security (JWT/argon2/OTP), ownership, rate_limit, logging
 │   ├── db/                # engine + session
 │   ├── models/            # SQLAlchemy models + Pydantic schemas
-│   ├── ingestion/         # parsers (PDF/DOCX/PPTX/TXT/MD), OCR, cleaning
+│   ├── ingestion/         # parsers (PDF/DOCX/PPTX/TXT/MD), OCR, VLM, cleaning
 │   ├── chunking/          # semantic (parent/child theo heading) + fixed (baseline)
 │   ├── embedding/         # BGE-M3
 │   ├── indexing/          # Qdrant store
@@ -151,8 +151,8 @@ cd frontend && npm install && npm run dev  # http://localhost:5173 (proxy /api -
 ## 6. Kiểm thử & chất lượng
 
 ```bash
-pytest -q                                   # unit + API tests (SQLite in-memory, không cần LLM/Qdrant)
-ruff check app tests migrations scripts
+pytest -q                                   # 196 test unit + API (SQLite in-memory, không cần LLM/Qdrant)
+ruff check app tests migrations scripts eval
 cd frontend && npm run lint && npm run build
 ```
 
@@ -169,6 +169,15 @@ Bộ eval ablation với LLM-as-judge khác hãng và khoảng tin cậy bootstr
 | `full` | 0.963 | 0.957 | 22/23 | 3.7 | 8.923 |
 
 Ở `production`, 1 trong 23 yêu cầu không nhận được phản hồi từ nhà cung cấp LLM nên không có điểm. Các khác biệt về chất lượng đều nằm trong khoảng tin cậy 95%. Khác biệt có ý nghĩa là thứ hạng truy xuất (MRR 0.735 → 0.846) và chi phí. Câu hỏi do AI soạn và tác giả duyệt, chưa phải câu hỏi thật của sinh viên. Chi tiết và hạn chế: [README.md](README.md#evaluation).
+
+**Trang scan: VLM so với Tesseract** ([`ocr-v1`](eval/results/ocr-v1/report.md), 10 trang ghi chú tiếng Việt làm xấu giả lập như bản scan):
+
+| Engine | CER ↓ | WER ↓ | Word F1 ↑ | Giây / trang | Token / trang |
+|---|---|---|---|---|---|
+| Tesseract `vie+eng` | 0.066 | 0.202 | 0.826 | 3.2 | 0 |
+| VLM `gemini-2.5-flash` | 0.046 | 0.085 | 0.964 | 19.7 | 1.873 |
+
+WER giảm rõ (hiệu paired −0.117 [−0.162, −0.059]); CER chưa chứng minh được khác biệt (CI chứa 0) vì 2 trang VLM đọc bảng theo thứ tự khác text layer. Lỗi của Tesseract phần lớn là dấu tiếng Việt. Chậm hơn ~6 lần nên mặc định vẫn là Tesseract. Mới đo trên scan giả lập, chưa có scan/ảnh chụp thật. Chi tiết: [`eval/FOLLOWUP.md`](eval/FOLLOWUP.md) mục 4.6.
 
 ---
 

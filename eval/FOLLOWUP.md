@@ -124,6 +124,54 @@ its marker appears in the answer at all.
 This is a small hand-written set against one model. It shows the mitigation works on these
 patterns, not that the system is immune.
 
+### 4.6 Scanned pages: Tesseract vs. a VLM (`ocr-v1`)
+
+**Question.** On a scanned page with no text layer, does sending the page image to the VLM
+(`OCR_ENGINE=vlm`, task `vision`, `gemini-2.5-flash`) transcribe it better than the current Tesseract
+`vie+eng` path, and at what cost?
+
+**Data.** 10 pages of Vietnamese course notes, rendered and degraded like a scan (slight rotation,
+blur, noise, low-quality JPEG; light 4, medium 3, heavy 3; `scripts/prepare_visual_eval.py`). Ground
+truth is the page's own text layer. Both engines run the production code path once per image; the
+prompt was not changed after seeing results. Metrics need no judge.
+
+| Engine | CER ↓ | CER, no diacritics ↓ | WER ↓ | Word F1 ↑ | s / page | Tokens / page |
+|---|---|---|---|---|---|---|
+| Tesseract `vie+eng` | 0.066 [0.058–0.073] | 0.049 [0.040–0.057] | 0.202 [0.188–0.219] | 0.826 [0.810–0.839] | 3.2 | 0 |
+| VLM `gemini-2.5-flash` | 0.046 [0.013–0.090] | 0.044 [0.012–0.086] | 0.085 [0.042–0.139] | 0.964 [0.955–0.973] | 19.7 | 1,873 |
+
+Paired differences (VLM − Tesseract, n = 10): WER −0.117 [−0.162, −0.059] and word F1 +0.138
+[+0.125, +0.154], both clear; CER −0.019 [−0.052, +0.024], **no demonstrated difference**.
+
+**What the numbers say**
+
+- The VLM gets many more words fully right (WER 0.20 → 0.09). Tesseract's errors are spread over
+  every page and are largely diacritics: removing diacritics cuts its CER by a quarter (0.066 →
+  0.049), against almost nothing for the VLM (0.046 → 0.044). In Vietnamese a wrong diacritic is a
+  wrong word, which is why WER separates the engines and CER does not.
+- CER does not separate them because of two pages (CER 0.22 and 0.09) where the VLM read a table in
+  a different order from the text layer. On those pages 97–98 % of its words matched the ground truth
+  (bag-of-words), so these are reading-order differences, not transcription errors. Word F1 was added
+  **after** this diagnosis to make that visible; CER and WER remain the primary metrics.
+- No sign of invented text: output length was 0.99–1.01× the reference on every page.
+- Cost: about 6× slower (median 19.7 s vs. 3.2 s, max 53 s) and ~1.9k tokens per page.
+- A second VLM (`gpt-5.4` via the same provider) could not be measured: all 10 calls returned 503
+  ("no available channel" on the provider side). The run is excluded, not scored as failures.
+
+**Decision.** The default stays `tesseract`. The gain is real on this set, but it is 10 synthetic
+pages from one document, and the cost is per page at upload time. `OCR_ENGINE=vlm` is available for
+scan-heavy uploads; a VLM failure falls back to Tesseract for that page, and `MAX_OCR_PAGES` caps the
+number of calls.
+
+**Measurement bug found on the way.** The first scoring gave both engines CER 0.2–0.7 even on
+lightly degraded pages. The ground truth came from `get_text()`, which follows the PDF content
+stream, so the page header and a table landed at the end. It now uses `get_text(sort=True)`; images
+are byte-identical (checked by hash), and the stored transcripts were re-scored with `--rescore`
+without new calls.
+
+**Not covered.** Real scans and phone photos (folders exist, empty), figure/table questions answered
+end to end through retrieval, and slide images (still Tesseract).
+
 ## 5. Open items
 
 - `final-v1` now covers all 81 questions on the shipped pipeline, replacing the abandoned
@@ -135,3 +183,5 @@ patterns, not that the system is immune.
 - Restoring diacritics by frequency can pick the wrong word ("đề thi" → "đề thị").
 - No false-premise questions. No real student questions.
 - The critic's 0.9 threshold and a cross-vendor critic are unmeasured.
+- VLM transcription (`ocr-v1`) is measured on 10 synthetic scans only; no real scans, photos or
+  end-to-end figure questions yet.

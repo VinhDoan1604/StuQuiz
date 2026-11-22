@@ -57,6 +57,7 @@ per-topic mastery score.
 | 📝 **Quiz & mastery** | Answers never leave the server before grading; mastery score (asymmetric +10 / −15) and a Leitner-style review schedule (1 → 3 → 7 → 14 days). |
 | 💸 **Cost-aware LLM routing** | Cheap model for rewrite/decompose/grade/qa, strong model for teaching/quiz/summary; provider-agnostic (Gemini, OpenAI, Anthropic). Token usage tracked per task via callbacks. |
 | 🇻🇳 **Vietnamese-ready ingestion** | PDF (PyMuPDF → pypdf fallback → Tesseract `vie` OCR for scans), DOCX, PPTX, TXT, MD; Unicode NFC normalisation; heading-aware semantic chunking. |
+| 🖼️ **Optional VLM transcription** | `OCR_ENGINE=vlm` sends scanned pages to the multimodal model instead of Tesseract (falls back per page on failure). Measured: WER 0.20 → 0.09 on 10 synthetic scans, at ~6× the time; off by default. |
 
 ## Architecture
 
@@ -237,6 +238,7 @@ Those results drove the current defaults. The details are in [`eval/FOLLOWUP.md`
 | Follow-up handling | 15/15 follow-ups rewritten to the right topic; the old regex caught 2/15 |
 | Intent classifier | 34/36 correct, 95 % CI 0.82–0.98 |
 | Prompt injection | 13/20 → 0/20 attacks succeeded (10 hand-written patterns × 2 runs, one model) |
+| Scanned pages: VLM vs. Tesseract ([`ocr-v1`](eval/results/ocr-v1/report.md)) | 10 synthetic scans: WER 0.202 → 0.085 (paired Δ −0.117 [−0.162, −0.059]), CER 0.066 vs. 0.046 (CI includes 0), 19.7 s vs. 3.2 s per page |
 
 ## Preparing for deployment
 
@@ -299,8 +301,8 @@ cd frontend && npm install && npm run dev              # http://localhost:5173
 ## Tests & quality
 
 ```bash
-pytest -q                                  # 150 tests: API, auth isolation, graph routing, memory, quiz, quotas, streaming — no LLM/Qdrant needed
-ruff check app tests migrations scripts
+pytest -q                                  # 196 tests: API, auth isolation, graph routing, memory, quiz, quotas, streaming, VLM path — no LLM/Qdrant needed
+ruff check app tests migrations scripts eval
 cd frontend && npm run lint && npm run build
 ```
 
@@ -314,12 +316,12 @@ app/
 ├── agents/      orchestrator, retrieval, generation, reflection, quiz/summary
 ├── graph/       LangGraph StateGraph + run/stream
 ├── retrieval/   query rewrite/decompose, rerank, parent expansion
-├── ingestion/   parsers, OCR, cleaning        chunking/  semantic + fixed baseline
+├── ingestion/   parsers, OCR, VLM, cleaning   chunking/  semantic + fixed baseline
 ├── embedding/   BGE-M3                        indexing/  Qdrant store
 ├── memory/      chat history, context window, mastery tracker
 ├── llm/         provider registry + cheap/strong router
 └── core/        security, ownership, rate limit, logging
-eval/            ablation harness, judge, bootstrap metrics, judge audit
+eval/            ablation harness, judge, bootstrap metrics, judge audit, OCR/VLM CER-WER
 frontend/        React + Vite (Dockerfile + nginx)
 migrations/      Alembic          tests/  pytest
 ```
@@ -353,6 +355,9 @@ migrations/      Alembic          tests/  pytest
   because it reranks the top 20).
 - Eval questions were drafted by an AI and reviewed by the author, and tend to share vocabulary with
   the source, which makes retrieval look easier than it would be with real student queries.
+- **VLM transcription is measured on synthetic scans only** (10 pages of one document, degraded
+  digitally). The WER gain is clear there; real scans, phone photos and figure/table questions are
+  not measured, so the default stays Tesseract. See [`eval/FOLLOWUP.md`](eval/FOLLOWUP.md) §4.6.
 - Indexing runs in a single in-process slot; a task queue would be needed for many concurrent uploads.
 - One worker per container because models live in process memory; scale out horizontally.
 

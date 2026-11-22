@@ -24,7 +24,7 @@ Status of StudyRAG as of **November 2026**. Items move to "Done" only when they 
 - [x] React 19 UI: spaces, upload progress, SSE reasoning timeline, clickable citations, quiz, mastery
 - [x] Auth: JWT, argon2id, email OTP, Google Sign-In; ownership checks on every id; rate limiting (Redis)
 - [x] PostgreSQL + Alembic, Docker Compose (postgres · qdrant · redis · api · web), nginx
-- [x] CI: ruff, migration round-trip, pytest (150 tests), frontend lint + build
+- [x] CI: ruff, migration round-trip, pytest (196 tests), frontend lint + build
 - [x] Ablation eval harness with bootstrap CIs, cross-model judge, human audit of the judge
 - [x] **Published evaluation results** — 18-document public corpus ([`eval/CORPUS.md`](eval/CORPUS.md)),
   48 reviewed questions (37 answerable, 11 unanswerable, 11 in English); all 6 configs run;
@@ -33,6 +33,11 @@ Status of StudyRAG as of **November 2026**. Items move to "Done" only when they 
 
 - [x] **Final evaluation of the shipped pipeline** — 81 questions, `dense` / `production` / `crag` / `full`
   ([`eval/results/final-v1/report.md`](eval/results/final-v1/report.md)); demo GIF and screenshots in [`assets/`](assets/).
+
+**Multimodal (November 2026)**
+- [x] Image-aware LLM helper (`acall_llm_vision` / `call_llm_vision`) with fallback and usage tracking
+- [x] `OCR_ENGINE=vlm`: scanned PDF pages transcribed by the VLM, per-page Tesseract fallback (off by default)
+- [x] [`ocr-v1`](eval/results/ocr-v1/report.md): CER/WER with bootstrap CIs on 10 synthetic scans — WER 0.20 → 0.09
 
 **Production readiness (November 2026)**
 - [x] Conversation history reaches the generator; follow-ups rewritten in the intent call
@@ -49,5 +54,5 @@ Status of StudyRAG as of **November 2026**. Items move to "Done" only when they 
 
 ## 💡 Later / ideas
 
-- Multimodal ingestion: figures and formulas from slides (OCR → captioning).
+- Multimodal, next: real scans/phone photos, figure/table questions end to end, VLM for slide images.
 - Smarter scheduling (SM-2 / FSRS) using response confidence, not only correctness.
