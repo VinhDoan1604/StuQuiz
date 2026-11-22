@@ -203,3 +203,7 @@ def test_wer_counts_syllables_and_empty_cases():
 def test_normalize_ocr_text_is_nfc_and_strips_d_bar():
     assert normalize_ocr_text("Đường  đi", strip_diacritics=True) == "Duong di"
     assert normalize_ocr_text("Tiếng") == "Tiếng"
+
+
+def test_table_cell_separators_are_formatting_not_errors():
+    assert cer("Tiêu chí OLTP OLAP", "Tiêu chí | OLTP | OLAP") == 0.0

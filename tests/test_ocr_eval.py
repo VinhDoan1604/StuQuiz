@@ -62,3 +62,22 @@ def test_merge_runs_combines_engines_without_duplicates(tmp_path):
     summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
     assert summary["engines"]["vlm:m"]["n"] == 4  # bản trùng ở r2 bị bỏ
     assert json.loads((out / "meta.json").read_text(encoding="utf-8"))["merged_from"] == ["r1", "r2"]
+
+
+def test_rescore_uses_current_ground_truth_and_labels_old_vlm_runs(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "a.gt.txt").write_text("đúng rồi", encoding="utf-8")
+    src = tmp_path / "old"
+    src.mkdir()
+    rows = [{**_rec("a.jpg", "light", "vlm", 0.9), "text": "đúng rồi"},
+            {**_rec("a.jpg", "light", "tesseract", 0.9), "text": "dung roi"}]
+    (src / "raw.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    (src / "meta.json").write_text(json.dumps({**META, "run_id": "old", "dataset": "x", "degradation": {},
+                                               "metrics": "m", "vlm_model": "p:gem"}), encoding="utf-8")
+    out = tmp_path / "new"
+    out.mkdir()
+    merge_runs([src], out, "new", n_boot=100, rescore_data=data)
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert summary["engines"]["vlm:gem"]["cer"]["mean"] == 0.0
+    assert summary["engines"]["tesseract"]["cer"]["mean"] > 0

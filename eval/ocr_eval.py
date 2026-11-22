@@ -6,6 +6,7 @@ eval/ocr_eval.py — Tesseract vs VLM khi chép chữ trang scan, đo bằng CER
     python -m eval.ocr_eval --engines tesseract vlm --run-id ocr-v1      # 1 lời gọi VLM / ảnh
     CHEAP_MODEL_PROVIDER=... CHEAP_MODEL_NAME=... python -m eval.ocr_eval --engines vlm --run-id ocr-v1-b
     python -m eval.ocr_eval --from-raw eval/results/ocr-v1 eval/results/ocr-v1-b --run-id ocr-v1-all  # gộp, không gọi lại
+    python -m eval.ocr_eval --from-raw eval/results/ocr-v1 --rescore --run-id ocr-v1-r  # chấm lại theo GT hiện tại
 
 Dữ liệu: eval/data/ocr/synthetic_scan/manifest.json — trang ghi chú tiếng Việt render rồi làm
 xấu như bản scan (light / medium / heavy), ground truth là text layer gốc. Đây là scan GIẢ LẬP:
@@ -166,6 +167,8 @@ def main() -> None:
     ap.add_argument("--engines", nargs="+", choices=ENGINES, default=["tesseract"])
     ap.add_argument("--from-raw", nargs="+", type=Path, metavar="RUN_DIR",
                     help="không chạy engine: gộp raw.jsonl của các run đã có rồi viết báo cáo mới")
+    ap.add_argument("--rescore", action="store_true",
+                    help="với --from-raw: chấm lại bản chép đã lưu theo ground truth hiện tại trong --data")
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--data", type=Path, default=DATA_DIR)
     ap.add_argument("--limit", type=int, default=0, help="chỉ chạy N ảnh đầu (kiểm tra nhanh)")
@@ -184,7 +187,7 @@ def main() -> None:
     run_dir = RESULTS / args.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     if args.from_raw:
-        merge_runs(args.from_raw, run_dir, args.run_id, args.bootstrap)
+        merge_runs(args.from_raw, run_dir, args.run_id, args.bootstrap, rescore_data=args.data if args.rescore else None)
         return
     meta = {
         "run_id": args.run_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "git_commit": _git_commit(),
@@ -217,13 +220,22 @@ def main() -> None:
     print("\n" + md)
 
 
-def merge_runs(sources: list[Path], run_dir: Path, run_id: str, n_boot: int) -> None:
-    """Gộp nhiều run (vd 2 VLM chạy riêng) thành 1 báo cáo. Engine trùng tên: giữ run đầu tiên."""
+def merge_runs(
+    sources: list[Path], run_dir: Path, run_id: str, n_boot: int, rescore_data: Path | None = None
+) -> None:
+    """Gộp nhiều run (vd 2 VLM chạy riêng) thành 1 báo cáo. Engine trùng tên: giữ run đầu tiên.
+    rescore_data: chấm lại `text` đã lưu theo *.gt.txt trong thư mục đó (sửa nhãn, không gọi lại engine)."""
     records, metas, seen = [], [], set()
     for src in sources:
-        metas.append(json.loads((src / "meta.json").read_text(encoding="utf-8")))
+        src_meta = json.loads((src / "meta.json").read_text(encoding="utf-8"))
+        metas.append(src_meta)
         for line in (src / "raw.jsonl").read_text(encoding="utf-8").splitlines():
             rec = json.loads(line)
+            if rec["engine"] == "vlm":  # run cũ chưa ghi tên model vào nhãn engine
+                rec["engine"] = f"vlm:{src_meta.get('vlm_model', 'unknown').split(':')[-1]}"
+            if rescore_data is not None:
+                gt_name = Path(rec["item"]).with_suffix(".gt.txt").name
+                rec.update(score((rescore_data / gt_name).read_text(encoding="utf-8"), rec["text"]))
             if (rec["item"], rec["engine"]) not in seen:
                 seen.add((rec["item"], rec["engine"]))
                 records.append(rec)
@@ -231,6 +243,7 @@ def merge_runs(sources: list[Path], run_dir: Path, run_id: str, n_boot: int) -> 
         "run_id": run_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "merged_from": [m["run_id"] for m in metas],
         "git_commit": metas[0]["git_commit"], "ocr_lang": metas[0]["ocr_lang"], "dataset": metas[0]["dataset"],
         "degradation": metas[0]["degradation"], "metrics": metas[0]["metrics"],
+        "rescored_against": rescore_data.as_posix() if rescore_data is not None else None,
         "sources": metas,
     }
     (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -188,10 +188,11 @@ def edit_distance(a: Sequence, b: Sequence) -> int:
 
 
 def normalize_ocr_text(s: str, strip_diacritics: bool = False) -> str:
-    """NFC + gộp khoảng trắng (ngắt dòng khác nhau giữa engine không phải lỗi nội dung).
+    """NFC + gộp khoảng trắng (ngắt dòng khác nhau giữa engine không phải lỗi nội dung) và coi
+    ký tự ngăn ô bảng "|" là khoảng trắng.
     Giữ hoa/thường và dấu câu. strip_diacritics=True: bỏ dấu tiếng Việt (đ -> d) để tách
     lỗi dấu ra khỏi lỗi chữ."""
-    s = unicodedata.normalize("NFC", s or "")
+    s = unicodedata.normalize("NFC", s or "").replace("|", " ")  # "|" ngăn ô bảng: định dạng, không phải chữ
     if strip_diacritics:
         s = unicodedata.normalize("NFD", s.replace("đ", "d").replace("Đ", "D"))
         s = unicodedata.normalize("NFC", "".join(ch for ch in s if unicodedata.category(ch) != "Mn"))

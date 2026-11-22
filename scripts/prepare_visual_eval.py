@@ -6,8 +6,8 @@ Chuẩn bị dữ liệu cho eval OCR/VLM từ corpus có sẵn (eval/corpus/), 
 1. figure_table/: render các trang có hình raster hoặc bảng (nội dung hình KHÔNG có trong text
    layer) + candidates.json (tài liệu, trang, caption) -> nguồn cho câu hỏi "đáp án nằm trong hình".
 2. synthetic_scan/: trang ghi chú tiếng Việt render rồi làm xấu đi như bản scan (xoay nhẹ, mờ,
-   nhiễu, JPEG chất lượng thấp). Ground truth lấy từ text layer gốc (*.gt.txt), nên có CER/WER
-   miễn phí. Đây là scan GIẢ LẬP: báo cáo phải tách riêng với scan/ảnh chụp thật.
+   nhiễu, JPEG chất lượng thấp). Ground truth lấy từ text layer gốc theo thứ tự đọc (*.gt.txt),
+   nên có CER/WER miễn phí. Đây là scan GIẢ LẬP: báo cáo phải tách riêng với scan/ảnh chụp thật.
 3. Tạo sẵn thư mục scan/ và phone_photo/ cho ảnh thật (tự chụp/scan, ground truth sửa tay).
 
     python scripts/prepare_visual_eval.py            # ghi vào eval/data/ocr/
@@ -114,7 +114,9 @@ def main() -> None:
             level = level_names[i % len(level_names)]
             stem = f"{Path(name).stem}_p{n:03d}_{level}"
             degrade(render(doc[n - 1], args.dpi), level, rng).save(OUT / "synthetic_scan" / f"{stem}.jpg")
-            gt = unicodedata.normalize("NFC", doc[n - 1].get_text()).strip()
+            # sort=True: thứ tự đọc thị giác (trên->dưới, trái->phải). Mặc định get_text() theo thứ tự
+            # content stream của PDF, có thể đặt tiêu đề trang/bảng ở cuối -> phạt oan mọi engine.
+            gt = unicodedata.normalize("NFC", doc[n - 1].get_text(sort=True)).strip()
             (OUT / "synthetic_scan" / f"{stem}.gt.txt").write_text(gt + "\n", encoding="utf-8")
             manifest.append({"image": f"{stem}.jpg", "ground_truth": f"{stem}.gt.txt",
                              "document": name, "page": n, "level": level})
