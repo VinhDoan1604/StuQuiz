@@ -35,6 +35,7 @@ from pypdf.errors import PdfReadError
 from app.config import settings
 from app.ingestion.ocr import OCR_MIN_CONFIDENCE, OCRError, ocr_page_image
 from app.ingestion.text_parser import parse_text
+from app.ingestion.vlm import VLMError, vlm_transcribe_page
 from app.models.schemas import BlockType, ParsedBlock, ParsedDocument
 
 logger = logging.getLogger(__name__)
@@ -314,6 +315,29 @@ def _render_pdf_page_to_png(raw_bytes: bytes, page_index: int, dpi: int = OCR_RE
         doc.close()
 
 
+def _transcribe_scanned_page(image_bytes: bytes, page_idx: int, warnings: list[str]) -> tuple[str, dict]:
+    """Chữ của 1 trang scan + metadata nguồn. OCR_ENGINE=vlm: thử VLM trước, lỗi thì lùi về
+    Tesseract (trang vẫn được index, kèm cảnh báo). Raises OCRError nếu Tesseract cũng lỗi."""
+    if settings.ocr_engine == "vlm":
+        try:
+            result = vlm_transcribe_page(image_bytes)
+            return result.text, {"source": "vlm", "vlm_latency_ms": round(result.latency_ms)}
+        except VLMError as exc:
+            warnings.append(f"Trang {page_idx}: VLM lỗi ({exc}) — dùng Tesseract.")
+
+    ocr_result = ocr_page_image(image_bytes, lang=settings.ocr_lang)
+    if ocr_result.low_confidence:
+        warnings.append(
+            f"Trang {page_idx}: OCR confidence thấp "
+            f"({ocr_result.confidence:.1f} < {OCR_MIN_CONFIDENCE}) — cần review thủ công."
+        )
+    return ocr_result.text, {
+        "source": "ocr",
+        "ocr_confidence": ocr_result.confidence,
+        "ocr_low_confidence": ocr_result.low_confidence,
+    }
+
+
 def _parse_pdf(raw_bytes: bytes, filename: str) -> ParsedDocument:
     blocks: list[ParsedBlock] = []
     warnings: list[str] = []
@@ -355,33 +379,15 @@ def _parse_pdf(raw_bytes: bytes, filename: str) -> ParsedDocument:
                     )
                 try:
                     zoom = OCR_RENDER_DPI / 72
-                    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
-                    image_bytes = pix.tobytes("png")
-                    ocr_result = ocr_page_image(image_bytes, lang=settings.ocr_lang)
-                except (OCRError, ParsingError, Exception) as exc:
+                    image_bytes = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom)).tobytes("png")
+                    transcribed = _transcribe_scanned_page(image_bytes, page_idx, warnings)
+                except Exception as exc:  # noqa: BLE001 — 1 trang lỗi không làm hỏng cả file
                     warnings.append(f"Trang {page_idx}: OCR fallback thất bại ({exc}).")
                     continue
 
-                if ocr_result.low_confidence:
-                    warnings.append(
-                        f"Trang {page_idx}: OCR confidence thấp "
-                        f"({ocr_result.confidence:.1f} < {OCR_MIN_CONFIDENCE}) — cần review thủ công."
-                    )
-
-                if ocr_result.text.strip():
-                    blocks.append(
-                        ParsedBlock(
-                            type=BlockType.PARAGRAPH,
-                            text=ocr_result.text,
-                            page=page_idx,
-                            order=order,
-                            extra={
-                                "source": "ocr",
-                                "ocr_confidence": ocr_result.confidence,
-                                "ocr_low_confidence": ocr_result.low_confidence,
-                            },
-                        )
-                    )
+                text, extra = transcribed
+                if text.strip():
+                    blocks.append(ParsedBlock(type=BlockType.PARAGRAPH, text=text, page=page_idx, order=order, extra=extra))
                     order += 1
                 continue
 

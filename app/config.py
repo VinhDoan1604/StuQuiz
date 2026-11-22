@@ -154,6 +154,10 @@ class Settings(BaseSettings):
     # Ngôn ngữ Tesseract cho OCR (PDF scan, hình trong slide). "vie+eng": tài liệu học song ngữ;
     # đo trên tài liệu thật: tiếng Việt gần như không đổi so với "vie", chữ tiếng Anh đọc chắc hơn.
     ocr_lang: str = "vie+eng"
+    # Engine đọc trang PDF scan (không có text layer): "tesseract" (mặc định, chạy local, miễn phí)
+    # | "vlm" (gửi ảnh trang cho CHEAP model qua task "vision"; model phải nhận được ảnh).
+    # VLM lỗi -> tự lùi về Tesseract cho trang đó. Số liệu: eval/ocr_eval.py, eval/FOLLOWUP.md.
+    ocr_engine: str = "tesseract"
     # OCR chữ trong hình của slide (sơ đồ, bảng chụp). Tắt nếu cần upload nhanh.
     ocr_slide_images: bool = True
     # Giới hạn để 1 file không chiếm CPU hàng chục phút. 0 = không giới hạn.
@@ -165,6 +169,9 @@ class Settings(BaseSettings):
         self.retrieval_mode = (self.retrieval_mode or "hybrid").strip().lower()
         if self.retrieval_mode not in ("hybrid", "dense"):
             raise ValueError("RETRIEVAL_MODE phải là 'hybrid' hoặc 'dense'.")
+        self.ocr_engine = (self.ocr_engine or "tesseract").strip().lower()
+        if self.ocr_engine not in ("tesseract", "vlm"):
+            raise ValueError("OCR_ENGINE phải là 'tesseract' hoặc 'vlm'.")
         if self.rerank_candidates < 1:
             raise ValueError("RERANK_CANDIDATES phải >= 1.")
         if not self.jwt_secret:  # "JWT_SECRET=" để trống trong .env
