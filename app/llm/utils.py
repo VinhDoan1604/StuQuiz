@@ -14,8 +14,11 @@ Helper dùng chung cho mọi agent / service cần gọi LLM — 2 kiểu:
    ứng dụng. Dùng cho Orchestrator (phân loại intent) và Reflection Agent
    (chấm điểm) — 2 nơi cần output có cấu trúc chặt.
 
-Cả 2 đều dùng `get_llm(task)` của app/llm/router.py — `task` PHẢI thuộc
-Literal["rewrite","decompose","grade","critic","qa","teaching","quiz","summary"].
+3. acall_llm_vision() / call_llm_vision(): prompt văn bản + ảnh (PNG/JPEG bytes), trả về
+   text. Bản đồng bộ dành cho ingestion (parse chạy trong thread nền, không có event loop).
+
+Tất cả đều dùng `get_llm(task)` của app/llm/router.py — `task` PHẢI thuộc
+Literal["rewrite","decompose","grade","critic","qa","teaching","quiz","summary","vision"].
 
 Lưu ý về with_structured_output(): độ tin cậy có thể khác nhau giữa
 provider (OpenAI/Anthropic qua tool-calling rất ổn định; Gemini qua
@@ -27,8 +30,9 @@ không phải ở đây.
 """
 from __future__ import annotations
 
+import base64
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
@@ -88,6 +92,69 @@ async def _with_fallback(task: str, call: Callable[[Any], Awaitable[R]], error_l
         return await call(fallback)
     except Exception as exc:
         raise LLMCallError(f"{error_label} (cả model dự phòng): {exc}") from exc
+
+
+def _with_fallback_sync(task: str, call: Callable[[Any], R], error_label: str) -> R:
+    """Bản đồng bộ của `_with_fallback` (cùng quy tắc: thử model dự phòng đúng 1 lần)."""
+    from app.llm.router import get_fallback_llm, get_llm, record_fallback
+
+    try:
+        return call(get_llm(task))
+    except Exception as exc:
+        fallback = get_fallback_llm(task)
+        if fallback is None:
+            raise LLMCallError(f"{error_label}: {exc}") from exc
+        logger.warning("LLM chính lỗi (task=%s, %s): %s — chuyển sang model dự phòng.", task, type(exc).__name__, exc)
+
+    record_fallback()
+    try:
+        return call(fallback)
+    except Exception as exc:
+        raise LLMCallError(f"{error_label} (cả model dự phòng): {exc}") from exc
+
+
+def image_mime_type(data: bytes) -> str:
+    """Nhận dạng PNG/JPEG/WebP/GIF theo magic bytes (không tin đuôi file)."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    raise ValueError("Ảnh không phải PNG/JPEG/WebP/GIF.")
+
+
+def build_vision_messages(system_prompt: str, user_prompt: str, images: Sequence[bytes]) -> list[Any]:
+    """[SystemMessage, HumanMessage(text + image_url data-URL)].
+
+    Định dạng `{"type": "image_url", "image_url": {"url": "data:..."}}` là chuẩn chung của
+    LangChain: ChatGoogleGenerativeAI, ChatOpenAI và ChatAnthropic đều tự chuyển sang định dạng
+    riêng của provider, nên đổi provider không phải sửa chỗ gọi."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    if not images:
+        raise ValueError("Cần ít nhất 1 ảnh.")
+    content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+    for data in images:
+        b64 = base64.b64encode(data).decode("ascii")
+        content.append({"type": "image_url", "image_url": {"url": f"data:{image_mime_type(data)};base64,{b64}"}})
+    return [SystemMessage(content=system_prompt), HumanMessage(content=content)]
+
+
+async def acall_llm_vision(task: str, system_prompt: str, user_prompt: str, images: Sequence[bytes]) -> str:
+    """Gọi LLM đa phương thức (văn bản + ảnh), trả về text thô."""
+    messages = build_vision_messages(system_prompt, user_prompt, images)
+    response = await _with_fallback(task, lambda llm: llm.ainvoke(messages), f"Lỗi gọi VLM (task='{task}')")
+    return extract_text_from_response(response)
+
+
+def call_llm_vision(task: str, system_prompt: str, user_prompt: str, images: Sequence[bytes]) -> str:
+    """Như `acall_llm_vision` nhưng đồng bộ — cho code chạy trong thread (parse tài liệu)."""
+    messages = build_vision_messages(system_prompt, user_prompt, images)
+    response = _with_fallback_sync(task, lambda llm: llm.invoke(messages), f"Lỗi gọi VLM (task='{task}')")
+    return extract_text_from_response(response)
 
 
 async def acall_llm_text(task: str, system_prompt: str, user_prompt: str) -> str:

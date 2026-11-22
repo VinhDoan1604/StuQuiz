@@ -9,6 +9,8 @@ Quy tắc phân bổ:
   + critic: chấm faithfulness của answer theo từng khẳng định (Self-RAG). Đặt
     CRITIC_MODEL_PROVIDER / CRITIC_MODEL_NAME để dùng model KHÁC họ với model sinh.
   + qa: trả lời câu hỏi trực tiếp, ngắn gọn
+  + vision: chép chữ từ ảnh trang scan (OCR_ENGINE=vlm, app/ingestion/vlm.py). Model rẻ
+    phải nhận được ảnh (Gemini 2.5 Flash: đã kiểm, xem CLAUDE.md).
 - STRONG model (STRONG_MODEL_PROVIDER / STRONG_MODEL_NAME):
   + teaching: giảng bài theo phương pháp giàn giáo (scaffolding)
   + quiz: sinh câu hỏi trắc nghiệm kèm giải thích
@@ -40,7 +42,7 @@ from app.llm.providers import build_chat_model, get_provider
 
 logger = logging.getLogger("app.llm.router")
 
-TaskType = Literal["rewrite", "decompose", "grade", "critic", "qa", "teaching", "quiz", "summary"]
+TaskType = Literal["rewrite", "decompose", "grade", "critic", "qa", "teaching", "quiz", "summary", "vision"]
 
 _USAGE_HISTORY_LIMIT = 1000
 
@@ -190,6 +192,7 @@ class UsageTrackingCallbackHandler(BaseCallbackHandler):
 TASK_TEMPERATURE_MAP: dict[TaskType, float] = {
     "grade": 0.0,       # chấm điểm khách quan, ổn định
     "critic": 0.0,
+    "vision": 0.0,      # chép nguyên văn, không sáng tạo
     "rewrite": 0.1,     # viết lại truy vấn bám sát ý gốc
     "decompose": 0.1,   # phân rã câu hỏi theo logic chặt
     "qa": 0.5,
@@ -198,7 +201,7 @@ TASK_TEMPERATURE_MAP: dict[TaskType, float] = {
     "teaching": 0.7,    # ví dụ minh hoạ phong phú
 }
 
-CHEAP_TASKS: set[TaskType] = {"rewrite", "decompose", "grade", "critic", "qa"}
+CHEAP_TASKS: set[TaskType] = {"rewrite", "decompose", "grade", "critic", "qa", "vision"}
 STRONG_TASKS: set[TaskType] = {"teaching", "quiz", "summary"}
 
 
