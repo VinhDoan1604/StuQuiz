@@ -170,3 +170,36 @@ def test_report_measures_answer_language_only_for_english_questions():
     got = collect(recs, items)["full"]["lang_match_en"]
     assert got == {"e1": 0.0, "e2": 1.0}          # câu tiếng Việt không bị tính
 
+
+
+# --- CER / WER (eval/ocr_eval.py) ---------------------------------------------------------
+from eval.metrics import cer, edit_distance, normalize_ocr_text, wer  # noqa: E402
+
+
+def test_edit_distance_basic_cases():
+    assert edit_distance("kitten", "sitting") == 3
+    assert edit_distance("", "abc") == 3
+    assert edit_distance("abc", "abc") == 0
+    assert edit_distance(["a", "b"], ["a", "c", "b"]) == 1
+
+
+def test_cer_ignores_line_breaks_but_counts_diacritic_errors():
+    ref = "Kho dữ liệu\nlà gì"
+    assert cer(ref, "Kho dữ liệu là gì") == 0.0
+    assert cer(ref, "Kho du lieu la gi") > 0
+    assert cer(ref, "Kho du lieu la gi", strip_diacritics=True) == 0.0
+
+
+def test_cer_can_exceed_one_when_hypothesis_invents_text():
+    assert cer("ab", "ab plus a lot of invented text") > 1
+
+
+def test_wer_counts_syllables_and_empty_cases():
+    assert wer("một hai ba", "một ba") == 1 / 3
+    assert wer("", "") == 0.0 and wer("", "x") == 1.0
+    assert cer("", "") == 0.0
+
+
+def test_normalize_ocr_text_is_nfc_and_strips_d_bar():
+    assert normalize_ocr_text("Đường  đi", strip_diacritics=True) == "Duong di"
+    assert normalize_ocr_text("Tiếng") == "Tiếng"

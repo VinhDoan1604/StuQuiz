@@ -162,3 +162,56 @@ def paired_bootstrap_diff(
         return nan, nan, nan, 0
     mean, lo, hi = bootstrap_ci(diffs, n_boot=n_boot, alpha=alpha, seed=seed)
     return mean, lo, hi, len(diffs)
+
+
+# ---------------------------------------------------------------------------
+# OCR / VLM: tỉ lệ lỗi ký tự (CER) và từ (WER) — eval/ocr_eval.py
+# ---------------------------------------------------------------------------
+def edit_distance(a: Sequence, b: Sequence) -> int:
+    """Levenshtein (chèn/xoá/thay = 1), O(len(a)·len(b)) thời gian, O(min) bộ nhớ."""
+    start = 0
+    while start < len(a) and start < len(b) and a[start] == b[start]:
+        start += 1
+    end_a, end_b = len(a), len(b)
+    while end_a > start and end_b > start and a[end_a - 1] == b[end_b - 1]:
+        end_a, end_b = end_a - 1, end_b - 1
+    a, b = a[start:end_a], b[start:end_b]
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, start=1):
+        cur = [i]
+        for j, y in enumerate(b, start=1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def normalize_ocr_text(s: str, strip_diacritics: bool = False) -> str:
+    """NFC + gộp khoảng trắng (ngắt dòng khác nhau giữa engine không phải lỗi nội dung).
+    Giữ hoa/thường và dấu câu. strip_diacritics=True: bỏ dấu tiếng Việt (đ -> d) để tách
+    lỗi dấu ra khỏi lỗi chữ."""
+    s = unicodedata.normalize("NFC", s or "")
+    if strip_diacritics:
+        s = unicodedata.normalize("NFD", s.replace("đ", "d").replace("Đ", "D"))
+        s = unicodedata.normalize("NFC", "".join(ch for ch in s if unicodedata.category(ch) != "Mn"))
+    return _WS.sub(" ", s).strip()
+
+
+def cer(reference: str, hypothesis: str, strip_diacritics: bool = False) -> float:
+    """Character error rate = edit distance / số ký tự của reference. Có thể > 1 khi
+    hypothesis chèn nhiều chữ không có trong reference (vd VLM viết thêm)."""
+    ref = normalize_ocr_text(reference, strip_diacritics)
+    hyp = normalize_ocr_text(hypothesis, strip_diacritics)
+    if not ref:
+        return 0.0 if not hyp else 1.0
+    return edit_distance(ref, hyp) / len(ref)
+
+
+def wer(reference: str, hypothesis: str) -> float:
+    """Word error rate trên từ tách theo khoảng trắng (tiếng Việt: âm tiết)."""
+    ref = normalize_ocr_text(reference).split()
+    hyp = normalize_ocr_text(hypothesis).split()
+    if not ref:
+        return 0.0 if not hyp else 1.0
+    return edit_distance(ref, hyp) / len(ref)
