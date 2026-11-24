@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     # --- LLM routing (xem app/llm/router.py) ---
     # Provider: xem PROVIDERS trong app/llm/providers.py
     cheap_model_provider: str = "shopaikey_google"
-    cheap_model_name: str = "gemini-2.5-flash"
+    cheap_model_name: str = "gemini-3.8-flash"
     strong_model_provider: str = "shopaikey_google"
-    strong_model_name: str = "gemini-2.5-flash"
+    strong_model_name: str = "gemini-3.8-flash"
     # Danh sách model user chọn trên UI: "<provider>:<model>[|Nhãn]", phân tách bằng dấu phẩy
     llm_chat_models: str = ""
     llm_timeout_seconds: int = 60
