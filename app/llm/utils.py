@@ -198,12 +198,51 @@ async def astream_llm_text(task: str, system_prompt: str, user_prompt: str, on_t
     return "".join(parts).strip()
 
 
+def inline_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Thay mọi `$ref` trỏ vào `$defs` bằng nội dung định nghĩa, bỏ `$defs`.
+
+    Gemini 3.8 Flash (qua ShopAIKey, 2026-11-25) bỏ qua `$ref` trong list lồng nhau: với
+    QuizBatch nó trả `{"questions": ["question", ...]}` hoặc mỗi câu là 1 CHUỖI JSON thay vì
+    object, nên parse lỗi 100%. Schema đã inline thì trả đúng object.
+    Model đệ quy (tự tham chiếu) không inline được -> ValueError.
+    """
+    defs = schema.get("$defs", {})
+
+    def resolve(node: Any, seen: frozenset[str]) -> Any:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                name = ref.rsplit("/", 1)[-1]
+                if name in seen:
+                    raise ValueError(f"Schema đệ quy ở '{name}', không inline được.")
+                extra = {k: v for k, v in node.items() if k != "$ref"}
+                return {**resolve(defs[name], seen | {name}), **resolve(extra, seen)}
+            return {k: resolve(v, seen) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [resolve(x, seen) for x in node]
+        return node
+
+    return resolve(schema, frozenset())
+
+
+def _structured_schema(output_model: type[BaseModel]) -> type[BaseModel] | dict[str, Any]:
+    """Schema phẳng: giữ nguyên class (hành vi cũ). Schema lồng nhau: dict đã inline `$ref`."""
+    schema = output_model.model_json_schema()
+    if "$defs" not in schema:
+        return output_model
+    try:
+        return inline_schema_refs(schema)
+    except ValueError:
+        return output_model
+
+
 async def acall_structured(task: str, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
     """Gọi LLM và ép trả về đúng instance của `output_model`."""
     messages = [("system", system_prompt), ("human", user_prompt)]
+    schema = _structured_schema(output_model)  # dict => provider trả dict, validate ở dưới
     result = await _with_fallback(
         task,
-        lambda llm: llm.with_structured_output(output_model).ainvoke(messages),
+        lambda llm: llm.with_structured_output(schema).ainvoke(messages),
         f"Lỗi structured output (task='{task}', model={output_model.__name__})",
     )
 
