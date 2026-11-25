@@ -127,9 +127,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  // Tài liệu còn đang lập chỉ mục thì chưa truy vấn được: chặn gửi cho tới khi 'ready'.
+  const isIndexing = documents.some(d => d.status === 'processing');
+
   const handleSend = async (customMessage?: string) => {
     const textToSend = customMessage || input;
-    if (!textToSend.trim() || isStreaming) return;
+    if (!textToSend.trim() || isStreaming || isIndexing) return;
 
     const userMsg: Message = {
       id: 'msg_' + Date.now(),
@@ -354,6 +357,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       <button
                         key={idx}
                         onClick={() => handleSend(prompt)}
+                        disabled={isIndexing}
                         className="surface-card surface-card-hover"
                         style={{
                           padding: '10px 14px',
@@ -568,7 +572,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Hỏi bất kỳ điều gì về tài liệu... (Enter để gửi, Shift+Enter xuống dòng)"
+                placeholder={isIndexing
+                  ? 'Đang lập chỉ mục tài liệu, vui lòng chờ trong giây lát...'
+                  : 'Hỏi bất kỳ điều gì về tài liệu... (Enter để gửi, Shift+Enter xuống dòng)'}
                 style={{
                   flex: 1,
                   background: 'transparent',
@@ -586,7 +592,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               <button
                 onClick={() => handleSend()}
-                disabled={isStreaming || !input.trim()}
+                disabled={isStreaming || isIndexing || !input.trim()}
                 className="btn-primary"
                 style={{
                   width: '34px',

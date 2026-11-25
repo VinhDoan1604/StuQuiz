@@ -14,6 +14,7 @@ import {
 import {
   errorMessage,
   uploadDocument,
+  fetchDocumentStatus,
   fetchSpaceChatHistory,
   type ChatSessionItem,
   type DocumentItem,
@@ -84,6 +85,26 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
     return () => clearInterval(interval);
   }, [documents, onRefresh]);
 
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // Hỏi trạng thái mỗi 2 s đến khi tài liệu rời 'processing' (tối đa ~10 phút).
+  const waitForIndexing = async (documentId: string) => {
+    for (let i = 0; i < 300 && mountedRef.current; i++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      try {
+        const st = await fetchDocumentStatus(documentId);
+        if (st.status !== 'processing') return st;
+      } catch (e) {
+        console.warn('Không kiểm tra được trạng thái tài liệu:', e);
+      }
+    }
+    throw new Error('Lập chỉ mục quá lâu. Hãy kiểm tra lại trạng thái tài liệu trong danh sách.');
+  };
+
   const handleFileUpload = async (file: File) => {
     setIsUploading(true);
     setUploadProgressData({
@@ -101,11 +122,28 @@ export const DocumentSidebar: React.FC<DocumentSidebarProps> = ({
         await onAttachDoc(res.document_id);
       }
       onRefresh();
+
+      // Server trả 'processing' khi lập chỉ mục chạy nền: chỉ báo xong khi đã 'ready',
+      // nếu không user hỏi ngay sẽ truy vấn vào tài liệu chưa có vector.
+      let numChunks = res.num_chunks;
+      if (res.status === 'processing' && res.document_id) {
+        setUploadProgressData(curr => curr && {
+          ...curr,
+          stageText: 'Đã tải lên. Đang lập chỉ mục tài liệu, vui lòng chờ...',
+        });
+        const final = await waitForIndexing(res.document_id);
+        if (!mountedRef.current) return;
+        onRefresh();
+        if (final.status === 'failed') {
+          throw new Error(final.error || 'Không thể lập chỉ mục tài liệu này.');
+        }
+        numChunks = final.num_chunks;
+      }
+
       setUploadProgressData({
         isUploading: false,
         fileName: file.name,
-        numChunks: res.num_chunks,
-        stageText: res.status === 'processing' ? '⚡ Tải lên thành công! Đang lập chỉ mục BGE-M3 trong nền...' : undefined,
+        numChunks,
         error: null
       });
       setTimeout(() => {

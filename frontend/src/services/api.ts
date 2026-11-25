@@ -360,6 +360,17 @@ export async function uploadDocument(file: File): Promise<UploadResult> {
   return res.json();
 }
 
+export interface DocumentStatusResult {
+  id: string;
+  filename: string;
+  status: DocumentStatus;
+  num_chunks: number;
+  error?: string | null;
+}
+
+export const fetchDocumentStatus = (documentId: string): Promise<DocumentStatusResult> =>
+  getJson(`/documents/${documentId}/status`, 'Không kiểm tra được trạng thái tài liệu');
+
 export async function deleteDocument(documentId: string): Promise<void> {
   const res = await authFetch(`/documents/${documentId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await errorDetail(res, 'Xóa tài liệu thất bại'));
