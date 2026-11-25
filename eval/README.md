@@ -1,4 +1,4 @@
-# Đánh giá StudyRAG
+# Đánh giá StuQuiz
 
 Bộ eval này thay thế hoàn toàn `ragas_eval.py` cũ (baseline tính ngược, judge trả hằng số).
 

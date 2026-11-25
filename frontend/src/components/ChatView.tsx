@@ -335,7 +335,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </div>
 
                 <h2 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                  {activeSpace ? activeSpace.title : 'Trợ lý học tập StudyRAG'}
+                  {activeSpace ? activeSpace.title : 'Trợ lý học tập StuQuiz'}
                 </h2>
                 <p style={{ fontSize: '14px', color: 'var(--text-secondary)', maxWidth: '520px', margin: '0 auto 24px', lineHeight: '1.6' }}>
                   {documents.length > 0
@@ -396,7 +396,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   paddingLeft: msg.role === 'assistant' ? '2px' : '0',
                   paddingRight: msg.role === 'user' ? '2px' : '0',
                 }}>
-                  {msg.role === 'user' ? 'Bạn' : 'StudyRAG'}
+                  {msg.role === 'user' ? 'Bạn' : 'StuQuiz'}
                 </div>
 
                 {/* Bubble */}

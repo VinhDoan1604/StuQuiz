@@ -1,7 +1,7 @@
 """
 scripts/seed_demo.py
 
-Seed dữ liệu demo cho StudyRAG (chỉ APP_ENV=dev):
+Seed dữ liệu demo cho StuQuiz (chỉ APP_ENV=dev):
 - 1 User học viên mẫu: student@studyrag.edu.vn / demo12345 (đã xác thực)
 - 1 Không gian học tập chứa 2 tài liệu mẫu
 - 2 Giáo trình chuyên sâu đã lập chỉ mục (Cấu trúc dữ liệu & RAG nâng cao)
@@ -42,7 +42,7 @@ from app.utils.time import utcnow
 
 def seed_demo_data():
     print("=" * 70)
-    print("🌱 Đang chuẩn bị seed dữ liệu demo StudyRAG...")
+    print("🌱 Đang chuẩn bị seed dữ liệu demo StuQuiz...")
     print("=" * 70)
 
     if not settings.is_dev:
@@ -263,7 +263,7 @@ def seed_demo_data():
                 intent="teaching",
                 content=(
                     "### Cơ chế Phản Hồi của Corrective RAG (CRAG) khi Thiếu Dữ Kiện:\n\n"
-                    "Trong kiến trúc StudyRAG, khi tài liệu truy xuất ban đầu không đủ độ bao quát, hệ thống không trả về câu trả lời hời hợt hoặc bịa đặt (*hallucination*), mà kích hoạt **vòng lặp sửa sai tự động (Self-Correction Loop)**:\n\n"
+                    "Trong kiến trúc StuQuiz, khi tài liệu truy xuất ban đầu không đủ độ bao quát, hệ thống không trả về câu trả lời hời hợt hoặc bịa đặt (*hallucination*), mà kích hoạt **vòng lặp sửa sai tự động (Self-Correction Loop)**:\n\n"
                     "1. **Đánh giá độ liên quan (`grade_context`)**:\n"
                     "   - Tác tử Reflection chấm điểm tính phù hợp của tài liệu (ví dụ đạt 0.52 < ngưỡng chuẩn 0.70).\n"
                     "2. **Tái cấu trúc câu truy vấn (`rewrite_query`)**:\n"

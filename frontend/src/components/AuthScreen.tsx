@@ -207,7 +207,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
             <BookOpen size={24} strokeWidth={2.2} />
           </div>
           <h1 style={{ fontSize: '20px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-            StudyRAG
+            StuQuiz
           </h1>
           <p style={{ fontSize: '13.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
             Trợ lý nghiên cứu & học tập tài liệu chuyên sâu

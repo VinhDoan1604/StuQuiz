@@ -93,7 +93,7 @@ def build_report(
     retrieval_only = meta.get("retrieval_only", False)
 
     L: list[str] = []
-    L.append(f"# Báo cáo đánh giá StudyRAG — run `{meta['run_id']}`\n")
+    L.append(f"# Báo cáo đánh giá StuQuiz — run `{meta['run_id']}`\n")
     L.append(f"- Ngày: {meta['date']} · commit: `{meta.get('git_commit', 'n/a')}`")
     L.append(f"- Dataset: **{len(items)} câu** ({n_ans} có đáp án, {n_unans} không có đáp án)")
     L.append(f"- Corpus: {len(meta['corpus'])} tài liệu · embedding `{meta['embedding_model']}` · top-k={meta['final_top_k']}")

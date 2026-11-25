@@ -1,5 +1,5 @@
 """
-Pydantic schemas cho toàn bộ hệ thống StudyRAG:
+Pydantic schemas cho toàn bộ hệ thống StuQuiz:
 - Ingestion models (ParsedBlock, ParsedDocument)
 - Chunking models (Chunk, ChunkMetadata)
 - API request/response DTOs (Chat, Quiz, Mastery, Reflection)

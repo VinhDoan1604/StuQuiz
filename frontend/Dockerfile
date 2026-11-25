@@ -1,4 +1,4 @@
-# Frontend StudyRAG: build Vite rồi phục vụ bằng nginx (kèm reverse proxy /api -> backend)
+# Frontend StuQuiz: build Vite rồi phục vụ bằng nginx (kèm reverse proxy /api -> backend)
 FROM node:20-alpine AS build
 WORKDIR /web
 COPY package.json package-lock.json ./

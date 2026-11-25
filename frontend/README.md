@@ -1,4 +1,4 @@
-# StudyRAG Frontend
+# StuQuiz Frontend
 
 React 19 + Vite + TypeScript. Xem README ở thư mục gốc để chạy toàn bộ hệ thống.
 

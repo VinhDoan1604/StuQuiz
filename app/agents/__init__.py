@@ -1,7 +1,7 @@
 """
 app/agents/__init__.py
 
-Multi-Agent layer cho StudyRAG:
+Multi-Agent layer cho StuQuiz:
 - Orchestrator Agent (phân loại intent, gợi ý ôn tập)
 - Retrieval Agent (CRAG retrieval loop, query rewrite/decompose)
 - Generation Agent (QA mode có citation, Teaching mode scaffolding)

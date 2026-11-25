@@ -26,14 +26,14 @@ def send_verification_email(to_email: str, code: str) -> bool:
     sender = settings.smtp_from or settings.smtp_user
     try:
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = "Mã xác thực StudyRAG của bạn"
-        msg["From"] = f"StudyRAG <{sender}>"
+        msg["Subject"] = "Mã xác thực StuQuiz của bạn"
+        msg["From"] = f"StuQuiz <{sender}>"
         msg["To"] = to_email
 
         html = f"""
         <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;
                     background:#0f1422;color:#f8fafc;border-radius:12px;border:1px solid #3b82f6;">
-          <h2 style="margin-top:0;color:#60a5fa;">StudyRAG</h2>
+          <h2 style="margin-top:0;color:#60a5fa;">StuQuiz</h2>
           <p style="color:#cbd5e1;">Mã xác thực tài khoản của bạn:</p>
           <div style="text-align:center;margin:20px 0;padding:16px;border:2px dashed #3b82f6;border-radius:8px;">
             <span style="font-size:32px;font-weight:800;letter-spacing:6px;color:#93c5fd;">{code}</span>
@@ -42,7 +42,7 @@ def send_verification_email(to_email: str, code: str) -> bool:
           Không chia sẻ mã này cho bất kỳ ai.</p>
         </div>
         """
-        msg.attach(MIMEText(f"Mã xác thực StudyRAG: {code} (hiệu lực {ttl} phút).", "plain"))
+        msg.attach(MIMEText(f"Mã xác thực StuQuiz: {code} (hiệu lực {ttl} phút).", "plain"))
         msg.attach(MIMEText(html, "html"))
 
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:

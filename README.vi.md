@@ -1,4 +1,4 @@
-# StudyRAG
+# StuQuiz
 
 Trợ lý học tập trên chính tài liệu của bạn: câu trả lời chỉ dựa trên tài liệu đã tải lên, có trích
 dẫn tới đoạn gốc, và từ chối khi tài liệu không có thông tin. Cùng tài liệu đó được dùng để tạo quiz
@@ -12,7 +12,7 @@ chấm ở server, kèm điểm thành thạo theo từng chủ đề.
 
 🇬🇧 [English version](README.md)
 
-<p align="center"><img src="assets/demo.gif" alt="Demo StudyRAG: hỏi về bài báo, mở trích dẫn, hỏi nối tiếp, làm quiz" width="820"/></p>
+<p align="center"><img src="assets/demo.gif" alt="Demo StuQuiz: hỏi về bài báo, mở trích dẫn, hỏi nối tiếp, làm quiz" width="820"/></p>
 
 ## Tóm tắt
 

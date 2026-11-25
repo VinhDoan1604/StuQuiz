@@ -27,7 +27,7 @@ def _owner(db) -> User:
     user = db.query(User).filter(User.email == settings.demo_owner_email).first()
     if user is None:
         # password_hash=None: tài khoản này không đăng nhập được.
-        user = User(id=new_id(), email=settings.demo_owner_email, full_name="StudyRAG Demo", auth_provider="system", is_verified=True)
+        user = User(id=new_id(), email=settings.demo_owner_email, full_name="StuQuiz Demo", auth_provider="system", is_verified=True)
         db.add(user)
         db.commit()
         db.refresh(user)

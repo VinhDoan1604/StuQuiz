@@ -2,7 +2,7 @@
 app/memory/mastery_tracker.py
 
 Mastery tracking & Spaced Review (mục 2.8, 5.11) — điểm khác biệt cốt lõi
-của StudyRAG giúp học sinh/sinh viên củng cố kiến thức theo chu kỳ não bộ.
+của StuQuiz giúp học sinh/sinh viên củng cố kiến thức theo chu kỳ não bộ.
 
 Thuật toán Spaced Repetition (SuperMemo/Leitner streak schedule):
 - streak = 1 -> ôn tập sau 1 ngày.

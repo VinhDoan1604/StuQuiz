@@ -1,4 +1,4 @@
-# Backend StudyRAG (FastAPI). Build: docker build -t studyrag-api .
+# Backend StuQuiz (FastAPI). Build: docker build -t studyrag-api .
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

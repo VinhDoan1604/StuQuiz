@@ -40,12 +40,12 @@ async def lifespan(_: FastAPI):
     if settings.preload_models:
         logger.info("Đang tải sẵn BGE-M3 + reranker...")
         await asyncio.to_thread(_preload_models)
-    logger.info("StudyRAG %s khởi động (APP_ENV=%s).", APP_VERSION, settings.app_env)
+    logger.info("StuQuiz %s khởi động (APP_ENV=%s).", APP_VERSION, settings.app_env)
     yield
 
 
 app = FastAPI(
-    title="StudyRAG",
+    title="StuQuiz",
     version=APP_VERSION,
     lifespan=lifespan,
     # Ẩn Swagger ngoài môi trường dev

@@ -81,7 +81,7 @@ export const Header: React.FC<HeaderProps> = ({
             <BookOpen size={18} strokeWidth={2.2} />
           </div>
           <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-            StudyRAG
+            StuQuiz
           </span>
         </div>
 

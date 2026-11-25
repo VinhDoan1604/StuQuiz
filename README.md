@@ -1,4 +1,4 @@
-# StudyRAG
+# StuQuiz
 
 A study assistant for your own lecture notes and papers: answers are grounded in the uploaded
 documents, cite the passage they came from, and refuse when the documents don't say. The same
@@ -12,7 +12,7 @@ material becomes server-graded quizzes with a per-topic mastery score.
 
 🇻🇳 [Bản tiếng Việt](README.vi.md)
 
-<p align="center"><img src="assets/demo.gif" alt="StudyRAG demo: ask about a paper, open a citation, follow-up, quiz" width="820"/></p>
+<p align="center"><img src="assets/demo.gif" alt="StuQuiz demo: ask about a paper, open a citation, follow-up, quiz" width="820"/></p>
 
 ## Summary
 
