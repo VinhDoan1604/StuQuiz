@@ -1,271 +1,106 @@
-# 🎓 StudyRAG — Multi-Agent RAG Study Assistant
+# StudyRAG
 
-> Ask questions about **your own lecture slides and textbooks** and get answers that are
-> **grounded, cited and self-checked** — then turn the same material into quizzes that track
-> what you actually remember.
+A study assistant for your own lecture notes and papers: answers are grounded in the uploaded
+documents, cite the passage they came from, and refuse when the documents don't say. The same
+material becomes server-graded quizzes with a per-topic mastery score.
 
 [![CI](https://github.com/VinhDoan1604/StuQuiz/actions/workflows/ci.yml/badge.svg)](https://github.com/VinhDoan1604/StuQuiz/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB)
 ![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-1C3C3C)
 ![Qdrant](https://img.shields.io/badge/Qdrant-vector_search-DC244C)
-![FastAPI](https://img.shields.io/badge/FastAPI-SSE-009688)
 ![React](https://img.shields.io/badge/React_19-TypeScript-61DAFB)
 
-🇻🇳 Bản tiếng Việt: [README.vi.md](README.vi.md)
+🇻🇳 [Bản tiếng Việt](README.vi.md)
 
----
+<p align="center"><img src="assets/demo.gif" alt="StudyRAG demo: ask about a paper, open a citation, follow-up, quiz" width="820"/></p>
 
-## The short version
+## Summary
 
-I built the full agentic pipeline (corrective RAG, self-critic, hybrid search), then measured every
+I built the full agentic pipeline (corrective RAG, a self-critic, hybrid search), then measured each
 component with an ablation harness. On 81 questions, **CRAG and the critic cost 2–3× the tokens with
-no measurable quality gain**, and sparse retrieval added nothing once reranking was on, so production
-runs the simpler pipeline: dense search, cross-encoder rerank, one generation. The reranking stack
-clearly improved ranking (MRR 0.74 → 0.85), but answer correctness did not change, because the
-evidence was usually already in the top 5. The expensive paths are still in the code behind flags,
-and the numbers are below.
+no measurable quality gain**, and sparse retrieval added nothing once reranking was on. Production
+therefore runs the simpler pipeline: dense search, cross-encoder rerank, one generation. The reranker
+clearly improved ranking (MRR 0.735 → 0.846), but answer correctness did not change, because the
+evidence was usually in the top 5 already. The expensive paths stay in the code behind flags.
 
-![StudyRAG demo: upload a document, ask a question, open a citation](assets/demo.gif)
+## How it works
 
----
+1. **Orchestrator** classifies the intent (`qa`, `teaching`, `quiz`, `summary`) and, in the same LLM
+   call, rewrites follow-ups such as "explain that more simply" into standalone questions.
+2. **Retrieval**: BGE-M3 dense top-10 → `bge-reranker-v2-m3` cross-encoder (int8) → child-to-parent
+   expansion, always filtered to the user's own documents.
+3. **Generation** answers from the retrieved text only, with numbered citations, and streams tokens
+   over SSE. Retrieved text is fenced as data against prompt injection.
+4. **Optional loop** (`ENABLE_CRAG`, `ENABLE_ANSWER_CRITIC`, off by default): grade the context and
+   rewrite the query, then check the answer's faithfulness and regenerate.
 
-## Why this project
-
-Students learn from long, messy, often Vietnamese PDFs and slide decks. A plain "chat with your PDF"
-bot has three problems on this kind of material:
-
-1. **It answers confidently when the context is wrong or missing** (hallucination).
-2. **You can't verify it** — no pointer back to the slide or page.
-3. **It doesn't help you remember** — every session starts from zero.
-
-StudyRAG addresses each one explicitly: answers are constrained to retrieved context and refuse when
-it is missing (22 of 22 unanswerable questions refused); every answer carries **clickable
-citations** to the source chunk; and a **server-graded quiz + spaced-review tracker** keeps a
-per-topic mastery score.
-
-## Key features
-
-| | |
-|---|---|
-| 🔎 **Measured retrieval** | BGE-M3 dense search → `bge-reranker-v2-m3` cross-encoder → child→parent expansion. Sparse/RRF stays available with `RETRIEVAL_MODE=hybrid`. Rule-based normalization handles Vietnamese abbreviations and missing diacritics. |
-| 🔁 **Optional reflection loop** | CRAG + Self-RAG behind `ENABLE_CRAG` / `ENABLE_ANSWER_CRITIC`, off by default because evaluation showed no gain. Bounded loops; forced acceptances are flagged in the trace. |
-| 🧭 **Intent routing** | Orchestrator classifies `qa / teaching / quiz / summary`; teaching mode explains step by step instead of just answering. |
-| 📡 **Streaming** | `/chat/stream` (SSE) streams each graph step and the answer token by token. |
-| 🧠 **Conversation context** | Token-budgeted history (rolling summary + recent turns, old citations stripped) reaches the generator. Follow-ups are rewritten into standalone questions inside the intent call, so it adds no LLM call. |
-| 🛡️ **Guardrails** | Retrieved text is fenced as data against prompt injection, with per-user and global daily quotas, upload/OCR limits and an LLM fallback provider. |
-| 📈 **LLMOps** | Latency per graph node, tokens and fallbacks are stored with every answer; 👍/👎 feedback; `scripts/usage_report.py` summarises them; optional LangSmith tracing. |
-| 📝 **Quiz & mastery** | Answers never leave the server before grading; mastery score (asymmetric +10 / −15) and a Leitner-style review schedule (1 → 3 → 7 → 14 days). |
-| 💸 **Cost-aware LLM routing** | Cheap model for rewrite/decompose/grade/qa, strong model for teaching/quiz/summary; provider-agnostic (Gemini, OpenAI, Anthropic). Token usage tracked per task via callbacks. |
-| 🇻🇳 **Vietnamese-ready ingestion** | PDF (PyMuPDF → pypdf fallback → Tesseract `vie` OCR for scans), DOCX, PPTX, TXT, MD; Unicode NFC normalisation; heading-aware semantic chunking. |
-| 🖼️ **Optional VLM transcription** | `OCR_ENGINE=vlm` sends scanned pages to the multimodal model instead of Tesseract (falls back per page on failure). Measured: WER 0.20 → 0.09 on 10 synthetic scans, at ~6× the time; off by default. |
-
-## Architecture
-
-```mermaid
-flowchart TD
-    User([Student]) -->|SSE /chat/stream| Orchestrator[Orchestrator<br/>intent: qa / teaching / quiz / summary]
-
-    subgraph "LangGraph StateGraph"
-        Orchestrator --> Retrieval[Retrieval Agent<br/>BGE-M3 dense · rerank · parent expansion]
-        Retrieval -->|qa / teaching| Generation[Generation Agent<br/>answer + citations]
-        Retrieval -->|quiz / summary| QuizSummary[Quiz & Summary Agent]
-        Generation --> Accept[Accept + trace]
-
-        Retrieval -. ENABLE_CRAG .-> GradeContext{Grade context}
-        GradeContext -. insufficient .-> RewriteQuery[Rewrite query]
-        RewriteQuery -.-> Retrieval
-        GradeContext -. sufficient .-> Generation
-        Generation -. ENABLE_ANSWER_CRITIC .-> GradeAnswer{Critic: faithfulness}
-        GradeAnswer -. unfaithful .-> Generation
-        GradeAnswer -. faithful .-> Accept
-    end
-
-    Accept --> Memory[(Chat history · rolling summary<br/>Mastery · spaced review)]
-    QuizSummary --> Memory
-```
-
-**Ingestion path:** upload → parse (OCR fallback) → clean/NFC → parent/child semantic chunks
-(child 200–400 tokens, 50 overlap; parent ≤ 1 500) → BGE-M3 dense + sparse → Qdrant, filtered by `doc_id`.
+Ingestion: PDF (PyMuPDF → pypdf → Tesseract `vie` OCR, or `OCR_ENGINE=vlm`), DOCX, PPTX, TXT, MD →
+Unicode NFC → heading-aware parent/child chunks → Qdrant.
 
 | Layer | Tech |
-| :--- | :--- |
-| API | FastAPI, SSE, JWT (HS256), argon2id, Google Sign-In, email OTP, Redis-backed rate limiting |
-| Orchestration | LangGraph `StateGraph` ([`app/graph/build_graph.py`](app/graph/build_graph.py)), LangChain Core |
-| Models | Gemini / OpenAI / Anthropic via [`app/llm/router.py`](app/llm/router.py) with fallback; self-hosted BGE-M3 and bge-reranker-v2-m3 |
-| Storage | PostgreSQL 16 + Alembic migrations; Qdrant |
-| Frontend | React 19 + Vite + TypeScript, served by nginx |
-| Ops | Docker Compose (postgres · qdrant · redis · api · web, Caddy for HTTPS in production), GitHub Actions CI, `/health` + `/ready`, JSON logs with `X-Request-ID` |
-
-## Design decisions & trade-offs
-
-- **Why is the reflection loop off by default?** I expected it to be the headline feature. On 81
-  questions it produced no measurable quality gain at 2–3× the tokens, so it became opt-in. When
-  enabled, the trace records whether a grade was computed (`*_verified`) or the answer was accepted
-  because the budget ran out (`*_forced`), so the UI never claims a check that didn't happen.
-- **Why self-host embeddings and the reranker while calling an LLM API?** Generation is where a hosted
-  model is worth paying for; embeddings and reranking run on every document and question, and BGE
-  handles mixed Vietnamese/English well. The cost shows up in deployment: see below.
-- **Why parent/child chunks?** Small child chunks retrieve precisely; the parent section is what
-  the LLM reads, so answers don't lose surrounding definitions.
-- **Why a cheap/strong router?** Grading and rewriting are short classification-style calls that run
-  several times per question; routing them to a cheaper model keeps the loop affordable.
-- **Why rewrite follow-ups inside the intent call?** It needs conversation history anyway, so a
-  second field costs no extra round trip. The previous pronoun regex caught 2 of 15 follow-ups;
-  this catches 15 of 15.
+|---|---|
+| API | FastAPI, SSE, JWT, argon2id, Google Sign-In, email OTP, Redis rate limits and daily quotas |
+| Orchestration | LangGraph `StateGraph` ([`app/graph/build_graph.py`](app/graph/build_graph.py)) |
+| Models | Gemini / OpenAI / Anthropic through a cheap/strong router with fallback ([`app/llm/router.py`](app/llm/router.py)); self-hosted BGE-M3 and reranker |
+| Storage | PostgreSQL 16 + Alembic, Qdrant |
+| Frontend | React 19 + Vite + TypeScript, nginx |
+| Ops | Docker Compose, Caddy (HTTPS), GitHub Actions CI, JSON logs with request IDs, per-node latency and token usage stored with every answer |
 
 ## Evaluation
 
-An ablation harness ([`eval/`](eval/README.md)) adds one component at a time so each gain is attributable:
+The harness ([`eval/`](eval/README.md)) adds one component at a time, scores retrieval (hit@k, MRR)
+and answers (correctness and faithfulness from an LLM judge that is a different model from the
+generator), and reports 95 % bootstrap CIs, with paired bootstrap for differences.
 
-| Config | Adds |
-|---|---|
-| `dense` | Naive RAG baseline: dense top-5 → single generation |
-| `hybrid` | + sparse vectors, RRF fusion |
-| `hybrid_rerank` | + cross-encoder rerank (top-20 → top-5) |
-| `parent` | + child → parent expansion (context up to 1,500 tokens) |
-| `crag` | + context grading & query rewriting |
-| `full` | + faithfulness critic & regeneration |
-| `production` | What ships: dense top-10 → rerank → parent expansion, query decomposition, one generation |
-| `teaching` | `production` with the teaching prompt |
+**`final-v1`**: 81 reviewed questions over 18 public documents ([`eval/CORPUS.md`](eval/CORPUS.md)):
+58 answerable, 23 unanswerable (12 near-miss), 23 in informal student phrasing. Generator
+`gemini-2.5-flash`, judge `gpt-5.4`. Reports: [summary](eval/results/final-v1/report.md),
+[production vs CRAG/full](eval/results/final-v1/compare.md),
+[dense vs production](eval/results/final-v1/compare_dense.md).
 
-Metrics: retrieval **hit@k / recall@k / MRR**; answer **correctness & faithfulness** (LLM-as-judge
-using a *different* model from the generator); **correct refusal rate** on unanswerable questions;
-latency and LLM calls per question. All numbers come with **95 % bootstrap CIs** and paired-bootstrap
-differences, and judge reliability is audited against human labels (`eval/audit.py`: 85 % agreement,
-17/20 — see Limitations).
-
-### Final results (`final-v1`, 81 questions)
-
-These measure the code that ships. Same 18-document corpus, 81 reviewed questions (58 answerable,
-23 unanswerable, including 12 near-miss questions and 23 written in informal student phrasing).
-Generator `gemini-2.5-flash`, judge `gpt-5.4`, brackets are 95 % bootstrap CIs. Reports:
-[`report`](eval/results/final-v1/report.md), [`production vs CRAG/full`](eval/results/final-v1/compare.md),
-[`dense vs production`](eval/results/final-v1/compare_dense.md).
-
-| Config | Faithfulness | Correctness | False refusal ↓ | Correct refusal | p50 latency | LLM calls | Tokens |
-|---|---|---|---|---|---|---|---|
-| `dense` | 0.949 [0.924–0.972] | 0.957 [0.905–0.991] | 0.034 | 22/23 | 4.6 s | 1.0 | 2,516 |
-| **`production`** | **0.968** [0.945–0.988] | **0.957** [0.905–0.991] | 0.034 | **22/22**¹ | 10.3 s | 1.0 | 3,019 |
-| `crag` | 0.952 [0.925–0.973] | 0.940 [0.888–0.983] | 0.034 | 22/23 | 14.1 s | 2.7 | 6,087 |
-| `full` | 0.963 [0.941–0.982] | 0.957 [0.905–0.991] | 0.017 | 22/23 | 17.8 s | 3.7 | 8,923 |
-
-¹ One of the 23 requests got no response from the LLM provider (timeout, 0 tokens), so it has no score.
-
-| Retrieval (n = 58) | hit@1 | hit@5 | MRR |
-|---|---|---|---|
-| `dense` | 0.586 [0.466–0.724] | 0.966 [0.914–1.000] | 0.735 [0.651–0.822] |
-| `production` | 0.741 [0.621–0.845] | 0.983 [0.948–1.000] | 0.846 [0.776–0.909] |
-
-Paired differences:
-
-- **CRAG and the critic did not pay for themselves.** Against `production`, no quality metric improved
-  (every CI includes 0), and retrieval was identical. `crag` added 3,069 tokens [2,662–3,531] per
-  question and `full` added 5,851 [5,432–6,310]. On near-miss questions the loop averaged 4–5 LLM calls
-  per question to reach a refusal that `production` reached in one.
-- **The retrieval stack improved ranking but not answers.** `production` vs. `dense`: MRR +0.111
-  [+0.035, +0.189], correctness +0.000 [−0.026, +0.026], at +5.8 s per question. With hit@5 already
-  at 0.966, the evidence usually reached the generator either way. Ranking still decides which passage
-  is cited first, and a larger corpus would likely depend on it more, but this set does not show that.
-- **The ranking gain is concentrated in clean questions.** MRR +0.168 [+0.081, +0.262] on the original
-  48, but +0.010 [−0.120, +0.143] on informal student phrasing.
-- These `dense` and `production` runs differ by the whole retrieval stack (rerank, normalization,
-  decomposition). The reranker's isolated effect is the `dense` vs. `hybrid_rerank` row below.
-- `llm_calls` excludes the orchestrator, which every real chat request also runs. Measured through the
-  full Docker stack, a question takes 16–22 s end to end on CPU, most of it retrieval.
-
-### Earlier ablation (`full-v1`, 48 questions)
-
-**Setup:** 18 public documents ([`eval/CORPUS.md`](eval/CORPUS.md): Vietnamese Wikipedia, OpenStax, a
-Vietnamese decree, VOER, course notes/slides), **48 reviewed questions** (37 answerable, 11 unanswerable;
-11 in English against Vietnamese sources). Generator `gemini-2.5-flash`, judge `gpt-5.4` (different
-vendor). BGE-M3, top-k = 5. Brackets are 95 % bootstrap CIs.
-Full reports: [`full-v1`](eval/results/full-v1/report.md) (all configs, with LLM) and
-[`retrieval-v2`](eval/results/retrieval-v2/report.md) (retrieval re-scored for free after fixing the
-label of q064 — see Limitations).
-
-**Retrieval** (answerable questions, n = 37, scored on child chunks — `retrieval-v2`)
-
-| Config | hit@1 | hit@5 | recall@5 | MRR |
-|---|---|---|---|---|
-| `dense` | 0.54 [0.38–0.70] | 0.97 [0.92–1.00] | 0.92 [0.84–0.97] | 0.71 [0.60–0.82] |
-| `hybrid` | 0.57 [0.41–0.73] | 0.89 [0.78–0.97] | 0.86 [0.74–0.96] | 0.69 [0.57–0.81] |
-| `hybrid_rerank` | **0.78** [0.65–0.92] | **1.00** [1.00–1.00] | **0.95** [0.89–0.99] | **0.88** [0.81–0.95] |
-
-`parent` and `crag` rank chunks exactly like `hybrid_rerank` (they change what happens after
-retrieval); `full` was within 0.03 on every metric in `full-v1`.
-
-**Answers** (`full-v1`; faithfulness & correctness on n = 37 answerable, refusal on n = 11 unanswerable)
-
-| Config | Faithfulness | Correctness | False refusal ↓ | Correct refusal | p50 latency | LLM calls |
+| Config | Faithfulness | Correctness | Correct refusal | p50 latency | LLM calls | Tokens |
 |---|---|---|---|---|---|---|
-| `dense` | **0.92** [0.88–0.95] | 0.96 [0.91–1.00] | 0.03 | 11/11 | 5.2 s | 1.0 |
-| `hybrid` | 0.91 [0.87–0.95] | 0.95 [0.87–1.00] | 0.05 | 11/11 | 5.4 s | 1.0 |
-| `hybrid_rerank` | 0.89 [0.86–0.93] | 0.95 [0.89–0.99] | 0.05 | 11/11 | 42.8 s | 1.0 |
-| `parent` | 0.91 [0.87–0.94] | 0.97 [0.93–1.00] | 0.03 | 11/11 | 41.7 s | 1.0 |
-| `crag` | 0.89 [0.85–0.93] | 0.97 [0.93–1.00] | 0.00 | 11/11 | 49.0 s | 2.9 |
-| `full` | 0.87 [0.83–0.92] | **0.99** [0.96–1.00] | 0.00 | 11/11 | 50.3 s | 4.1 |
+| `dense` | 0.949 [0.924–0.972] | 0.957 [0.905–0.991] | 22/23 | 4.6 s | 1.0 | 2,516 |
+| **`production`** | **0.968** [0.945–0.988] | **0.957** [0.905–0.991] | **22/22**¹ | 10.3 s | 1.0 | 3,019 |
+| `crag` | 0.952 [0.925–0.973] | 0.940 [0.888–0.983] | 22/23 | 14.1 s | 2.7 | 6,087 |
+| `full` (CRAG + critic) | 0.963 [0.941–0.982] | 0.957 [0.905–0.991] | 22/23 | 17.8 s | 3.7 | 8,923 |
 
-**What the numbers say**
+¹ One request got no response from the LLM provider, so it has no score.
 
-- **The reranker is the only component with a statistically clear gain:** MRR +0.17 [+0.09, +0.26]
-  and hit@1 0.54 → 0.78 over `dense` (paired bootstrap). It is also the main latency cost (CPU,
-  ~35 s/question). Example (q025, "what do the white/grey/black vertex colours mean in Dijkstra?"):
-  with `dense` the evidence was the 5th, LaTeX-cluttered chunk and the model opened with "the
-  documents don't say" — then listed all three meanings from that same chunk; with `hybrid` the
-  evidence was not retrieved at all and the model (honestly) refused. Once the reranker moved the
-  evidence to position 1, every config answered correctly.
-  That gain is in ranking. Answer correctness was 0.96 for `dense` and 0.95 for `hybrid_rerank`.
-- **Hybrid (sparse + RRF) did not help** on this corpus: hit@5 −0.08 [−0.19, 0.00], MRR −0.02
-  [−0.08, +0.05] vs. `dense`. Production now uses dense candidates for the reranker.
-- **CRAG / the full loop** raise correctness (0.96 → 0.99) and remove false refusals (3 % → 0 %), but
-  neither difference is significant at n = 37 — while costing ~4× the LLM calls and ~10× the latency of
-  `dense`.
-- **Faithfulness drops slightly** as components are added (0.92 `dense` → 0.87 `full`, Δ −0.04
-  [−0.10, +0.01]) — not significant, but the opposite of what the critic loop is meant to do. Not yet
-  diagnosed; longer parent contexts and multi-source synthesis are the first suspects.
-- **Correct refusal is 11/11 for every config** — the unanswerable set is too easy to discriminate
-  between configs (ceiling effect).
+- **CRAG and the critic did not pay for themselves.** No quality metric improved over `production`
+  (every CI includes 0); `crag` added 3,069 tokens [2,662–3,531] per question and `full` 5,851.
+- **The retrieval stack improved ranking, not answers.** MRR +0.111 [+0.035, +0.189] over `dense`,
+  correctness +0.000 [−0.026, +0.026], at +5.8 s per question. The gain is concentrated in clean
+  questions; on informal phrasing it is +0.010 [−0.120, +0.143].
+- In the earlier 48-question ablation ([`full-v1`](eval/results/full-v1/report.md)), the reranker was
+  the only component with a clear gain (MRR +0.17 [+0.09, +0.26]) and hybrid sparse + RRF did not help.
 
-### After `full-v1`
+Follow-up measurements ([`eval/FOLLOWUP.md`](eval/FOLLOWUP.md)):
 
-Those results drove the current defaults. The details are in [`eval/FOLLOWUP.md`](eval/FOLLOWUP.md).
-
-| Finding | Evidence |
+| Change | Result |
 |---|---|
-| CRAG/critic give no gain on hard questions | 33 student-style and near-miss questions: correctness 0.929 for all three configs, at 1.0 / 3.5 / 4.4 LLM calls |
-| Rerank latency cut without losing quality | p50 37–43 s → 13.0 s (dense, top-10, thread fix) → 8.4 s (int8, max length 384), MRR 0.846–0.854 on 58 answerable questions |
-| Informal phrasing is the hard case | MRR 0.881 on clean questions vs. 0.763 on abbreviated, undiacritized ones |
-| Follow-up handling | 15/15 follow-ups rewritten to the right topic; the old regex caught 2/15 |
+| Rerank latency (int8, max length 384, one rerank pass) | p50 37–43 s → 8.4 s, MRR 0.846–0.854 |
+| Follow-up rewriting inside the intent call | 15/15 rewritten to the right topic (old regex: 2/15) |
 | Intent classifier | 34/36 correct, 95 % CI 0.82–0.98 |
-| Prompt injection | 13/20 → 0/20 attacks succeeded (10 hand-written patterns × 2 runs, one model) |
-| Scanned pages: VLM vs. Tesseract ([`ocr-v1`](eval/results/ocr-v1/report.md)) | 10 synthetic scans: WER 0.202 → 0.085 (paired Δ −0.117 [−0.162, −0.059]), CER 0.066 vs. 0.046 (CI includes 0), 19.7 s vs. 3.2 s per page |
+| Prompt-injection fencing | 13/20 → 0/20 attacks succeeded (10 hand-written patterns × 2 runs) |
+| VLM vs. Tesseract on scanned pages ([`ocr-v1`](eval/results/ocr-v1/report.md)) | WER 0.202 → 0.085 (Δ −0.117 [−0.162, −0.059]) at ~6× the time, so Tesseract stays the default |
 
-## Preparing for deployment
+## Deployment
 
-Not hosted yet. These findings come from running the production image locally, including under a
-VPS-like cap of 2 CPUs and 3 GB:
+Live demo: **<https://studyrag-vinh.eastasia.cloudapp.azure.com/>**. Click "Dùng thử" to try it
+without an account; the demo space holds the DRR4Covid paper (see License).
 
-- **The LLM API is the easy part; the self-hosted models are not.** The API image is 2.9 GB, the
-  container peaked at 2.5 GB of RAM, and the first request after boot took about a minute because
-  models load lazily (`PRELOAD_MODELS=true` moves that to startup).
-- **CPU, not memory, is the limit.** Retrieval took 8–13 s on the dev machine and 38–57 s capped at 2
-  CPUs. The production config uses int8 quantization and a shorter max length to reduce this.
-- **Proxies break defaults.** Behind Caddy every user would share one IP and one rate limit until
-  nginx was told to trust the Docker network's `X-Forwarded-For`, and gzip has to be off for the SSE route.
+- **Server:** Azure `B2als_v2` (2 vCPU, 4 GB RAM, 4 GB swap) in East Asia, about $38.4 per month.
+- **Stack:** [`docker-compose.prod.yml`](docker-compose.prod.yml) with Postgres, Qdrant, Redis, the API,
+  nginx for the frontend and Caddy in front for HTTPS. Only Caddy exposes ports.
+- **Memory:** with BGE-M3 and the reranker loaded, the API container uses about 2.3 GB of its 3 GB limit.
+- **Trade-off:** embeddings and reranking run on the server's 2 CPUs, with no GPU, so answers take
+  noticeably longer than on a development machine. The demo has its own daily quota, since every
+  question calls a paid LLM.
 
 Production files: [`docker-compose.prod.yml`](docker-compose.prod.yml), [`deploy/`](deploy/), [`.env.prod.example`](.env.prod.example).
 
-## Security & data isolation
-
-- Every route except login requires a JWT; identity always comes from the token, never the body.
-- Every client-supplied id (space, document, session) is ownership-checked in
-  [`app/core/ownership.py`](app/core/ownership.py); other users' resources return **404**.
-- Vector search **requires** a verified `doc_id` list — no collection-wide queries.
-- Quiz answers are never sent to the client before server-side grading.
-- OTPs are stored as HMAC, with attempt limits, expiry and resend cooldown.
-- Demo accounts read a shared public document set; write and delete still require ownership.
-
-## Quick start (Docker)
+## Quick start
 
 ```bash
 git clone https://github.com/VinhDoan1604/StuQuiz.git && cd StuQuiz
@@ -273,101 +108,56 @@ cp .env.example .env      # set POSTGRES_PASSWORD and one LLM key (e.g. GOOGLE_A
 docker compose up -d --build
 ```
 
-Open **http://localhost:8080**. Migrations run on start. On first ingestion BGE-M3 and the reranker
-(~2–3 GB) are downloaded into the `model_cache` volume (`PRELOAD_MODELS=true` to download at boot).
+Open <http://localhost:8080>. Migrations run on start; BGE-M3 and the reranker (~2–3 GB) download on
+first use (`PRELOAD_MODELS=true` downloads them at boot).
 
 <details>
-<summary>Local development</summary>
+<summary>Local development and tests</summary>
 
-Requires Python 3.11, Node 20+, Docker (for Postgres/Qdrant). Optional: `tesseract-ocr` + `tesseract-ocr-vie`.
+Python 3.11, Node 20+, Docker for Postgres/Qdrant. Optional: `tesseract-ocr` + `tesseract-ocr-vie`.
 
 ```bash
 docker compose up -d postgres qdrant
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
-python scripts/init_db.py                              # alembic upgrade head
-python scripts/seed_demo.py                            # optional demo data
-uvicorn app.main:app --reload --port 8000              # Swagger at /docs (APP_ENV=dev only)
-cd frontend && npm install && npm run dev              # http://localhost:5173
-```
+python scripts/init_db.py                  # alembic upgrade head
+uvicorn app.main:app --reload --port 8000
+cd frontend && npm install && npm run dev  # http://localhost:5173
 
-- With `APP_ENV=dev`, if Postgres is unreachable the backend falls back to SQLite; other envs fail fast.
-- In dev without SMTP, the OTP is shown on the verification screen.
-- Optional tracing: set `LANGSMITH_TRACING=true` + `LANGSMITH_API_KEY` to see every graph run in LangSmith.
-- Google Sign-In setup: see [README.vi.md](README.vi.md#bật-đăng-nhập-google-tuỳ-chọn).
-
-</details>
-
-## Tests & quality
-
-```bash
-pytest -q                                  # 196 tests: API, auth isolation, graph routing, memory, quiz, quotas, streaming, VLM path — no LLM/Qdrant needed
+pytest -q                                  # 196 tests, no LLM or Qdrant needed
 ruff check app tests migrations scripts eval
 cd frontend && npm run lint && npm run build
 ```
 
-CI runs lint, an Alembic upgrade/downgrade round-trip, pytest, and the frontend build on every push.
+CI runs ruff, an Alembic upgrade/downgrade round trip, pytest and the frontend build.
 
-## Project layout
+</details>
 
-```
-app/
-├── api/         routes: auth, spaces, documents, chat (SSE), quiz, mastery
-├── agents/      orchestrator, retrieval, generation, reflection, quiz/summary
-├── graph/       LangGraph StateGraph + run/stream
-├── retrieval/   query rewrite/decompose, rerank, parent expansion
-├── ingestion/   parsers, OCR, VLM, cleaning   chunking/  semantic + fixed baseline
-├── embedding/   BGE-M3                        indexing/  Qdrant store
-├── memory/      chat history, context window, mastery tracker
-├── llm/         provider registry + cheap/strong router
-└── core/        security, ownership, rate limit, logging
-eval/            ablation harness, judge, bootstrap metrics, judge audit, OCR/VLM CER-WER
-frontend/        React + Vite (Dockerfile + nginx)
-migrations/      Alembic          tests/  pytest
-```
+## Limitations
 
-## Limitations & next steps
+- **Small eval set, wide CIs.** Only the ranking gain and the cost differences are claimed as real;
+  quality differences between configs fall inside the 95 % CI.
+- **The judge is lenient.** It agreed with a human on 17/20 answers, and all 3 disagreements were the
+  judge scoring higher (`eval/audit.py`). Absolute correctness is likely optimistic; faithfulness was
+  not audited.
+- **Questions were drafted by an AI and reviewed by me**, so they share vocabulary with the sources and
+  make retrieval look easier than real student queries would.
+- **Teaching mode is less grounded** (faithfulness 0.736 on 40 questions) because the model invented
+  examples. The prompt was fixed; the fix is not re-measured yet.
+- **Correct refusal is near the ceiling** (22/23 or better everywhere), so it barely separates configs.
+- **VLM transcription is measured on 10 synthetic scans only.**
+- Indexing runs in-process, one file at a time; models live in process memory, so one worker per container.
 
-- **Teaching mode is less grounded than Q&A.** It scored faithfulness 0.736 [0.670–0.802] on 40
-  questions, against 0.968 for Q&A, mainly because the model invented examples and cited them. The
-  prompt now restricts examples to the retrieved context, but that fix has not been re-measured yet.
-- **Small eval set → wide CIs.** Only 58 answerable questions; quality differences between configs fall
-  inside the 95 % CI, so only the ranking gain and the cost differences are claimed as real.
-- **The judge agrees with a human on 85 % of answers (17/20)** (`eval/audit.py`, random sample from
-  `full-v1`, exact correct/partial/incorrect label). All 3 disagreements were the judge being **more
-  lenient** (correct vs. partial ×2 on the same question, partial vs. incorrect ×1); it was never
-  stricter. Mean correctness on the sample: judge 0.95 vs. human 0.875, so absolute correctness above
-  is likely somewhat optimistic; comparisons between configs are less affected because the same judge
-  grades all of them. One grader, 20 answers (16 distinct questions, 18/20 judged correct) — a small
-  check, not a calibration. Faithfulness was not audited.
-- **One label was fixed after the run (q064).** Its gold evidence sat in a pseudo-code chunk that no
-  config retrieves, while a neighbouring chunk states the answer directly. An alternative evidence was
-  added and retrieval re-scored (`retrieval-v2`, no LLM calls); answer metrics are from `full-v1`.
-- **False refusals are slightly under-counted.** The judge flags `abstained` only when an answer
-  *mostly* says the information is missing, so a self-contradictory answer that claims "not in the
-  documents" and then answers anyway (q025 with `dense`) is not counted as a refusal. A cheap fix —
-  flag answers that both claim missing information and cite sources, then regenerate — is planned
-  but not yet measured.
-- **Correct-refusal rate is near the ceiling** (22 of 23 or better everywhere), even after adding 12
-  near-miss questions, so it barely separates configs.
-- **`hybrid` is not fully deterministic:** Qdrant's RRF produces score ties at the top-5 cut-off and
-  breaks them arbitrarily, so `hybrid` numbers move slightly between runs (`hybrid_rerank` is stable
-  because it reranks the top 20).
-- Eval questions were drafted by an AI and reviewed by the author, and tend to share vocabulary with
-  the source, which makes retrieval look easier than it would be with real student queries.
-- **VLM transcription is measured on synthetic scans only** (10 pages of one document, degraded
-  digitally). The WER gain is clear there; real scans, phone photos and figure/table questions are
-  not measured, so the default stays Tesseract. See [`eval/FOLLOWUP.md`](eval/FOLLOWUP.md) §4.6.
-- Indexing runs in a single in-process slot; a task queue would be needed for many concurrent uploads.
-- One worker per container because models live in process memory; scale out horizontally.
-
-See [ROADMAP.md](ROADMAP.md) for what's done and what's next.
+**Next:** replace the AI-drafted eval questions with real student queries, then use them to fine-tune
+a small reranker and to run CRAG only when the retrieval score is low.
 
 ## Author
 
-**Đoàn Công Vinh** — Computer Science, Ho Chi Minh City University of Technology (HCMUT) ·
+**Đoàn Công Vinh**, Computer Science, Ho Chi Minh City University of Technology (HCMUT) ·
 [GitHub](https://github.com/VinhDoan1604)
 
 ## License
 
-[AGPL-3.0](LICENSE), matching the PyMuPDF dependency.
+[AGPL-3.0](LICENSE), matching the PyMuPDF dependency. The demo document is
+Zhang P., Zhong Y., Deng Y., Tang X., Li X., "DRR4Covid: Learning Automated COVID-19 Infection
+Segmentation From Digitally Reconstructed Radiographs", *IEEE Access* 8, 2020,
+[doi:10.1109/ACCESS.2020.3038279](https://doi.org/10.1109/ACCESS.2020.3038279), used under CC BY 4.0.
